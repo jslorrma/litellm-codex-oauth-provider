@@ -1,0 +1,41 @@
+---
+repos:
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.4
+    hooks:
+      # Run the linter.
+      - id: ruff
+        stages: [pre-commit]
+        args: [--fix, --exit-non-zero-on-fix, --unsafe-fixes]
+        # files: ^src/
+      # Run the formatter.
+      - id: ruff-format
+        stages: [pre-commit]
+        # files: ^src/
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        stages: [pre-commit]
+        exclude: ^notebooks/
+      - id: end-of-file-fixer
+        stages: [pre-commit]
+      - id: check-toml
+        stages: [pre-commit]
+      - id: check-added-large-files
+        stages: [pre-commit]
+        args: ['--maxkb=50000']
+      - id: detect-private-key
+        stages: [pre-commit]
+      - id: no-commit-to-branch
+        stages: [pre-commit]
+        args: [--branch, develop]
+
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.37.1
+    hooks:
+      - id: yamllint
+        stages: [pre-commit]
+        args: ['-d {extends: relaxed, rules: {line-length: disable}}', '-s']

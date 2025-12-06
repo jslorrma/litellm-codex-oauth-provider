@@ -1,0 +1,19 @@
+/* Indentation. */
+.doc-function h2 {
+  line-height: 2.5;
+  border-top:2px solid var(--md-typeset-table-color);
+}
+
+.doc-class h2 {
+  line-height: 2.5;
+  border-top:2px solid var(--md-typeset-table-color);
+}
+
+.doc .doc-contents:not(.first) {
+  padding-left: 25px;
+  border-left: .1rem solid var(--md-typeset-table-color);
+}
+
+table thead :is(td, th) {
+  background-color: var(--md-typeset-table-color);
+}

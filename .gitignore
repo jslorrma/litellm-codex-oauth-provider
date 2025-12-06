@@ -1,0 +1,33 @@
+# pixi environments
+.pixi/*
+!.pixi/config.toml
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Environments
+.env
+.envrc.local
+.venv/
+
+# Lockfiles
+pixi.lock
+
+# Jupyter notebooks
+.ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
+
+# Docs build output
+site/
+docs/assets/
+
+# OS / Editor
+.DS_Store
+.idea/
+.vscode/
