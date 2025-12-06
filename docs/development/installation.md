@@ -6,7 +6,7 @@
 
 ### Pixi and Direnv
 
-This project uses [`pixi`](https://pixi.sh/latest/) as a project and package manager and [`direnv`](https://direnv.net/) to automatically switch environments when entering a project's root directory. Both tools are essential for setting up the development environment and managing dependencies in this project.
+This project uses [`pixi`](https://pixi.sh/latest/) as a project and package manager. For automatic environment activation, we recommend [`direnv`](https://direnv.net/), but it is optional.
 
 ??? info "About Pixi and Direnv"
 
@@ -17,17 +17,12 @@ This project uses [`pixi`](https://pixi.sh/latest/) as a project and package man
         - Entirely written in Rust, making it super fast.
         - Supports workflow and task automation similar to `make`, `just` or `task`.
 
-    - `direnv` is an environment switcher for the shell. It hooks into the shell to load or unload environment variables depending on the current directory, if a `.envrc` file is present. This allows for automatic activation and deactivation of virtual environments, setting environment variables, and running scripts when entering and leaving this repository.
+    - `direnv` is an environment switcher for the shell. It hooks into the shell to load or unload environment variables depending on the current directory, if a `.envrc` file is present. This allows for automatic activation and deactivation of virtual environments.
 
-If you haven't installed `pixi` and `direnv` yet, either follow the installation instructions from the official documentation:
+If you haven't installed `pixi` and (optionally) `direnv` yet, follow the installation instructions from the official documentation:
 
 - [Pixi Installation](https://pixi.sh/latest/#installation)
 - [Direnv](https://direnv.net/docs/installation.html)
-
-or use the installation scripts provided in this repository:
-
-- [Windows Installation Script](../../scripts/install_pixi_direnv.ps1)
-- [Unix Installation Script](../../scripts/install_pixi_direnv.sh)
 
 For more information on doing Python development with `pixi`, please refer to this [tutorial](https://pixi.sh/latest/tutorials/python/).
 
@@ -39,9 +34,9 @@ For more information on doing Python development with `pixi`, please refer to th
 
 ## Installation Steps
 
-This project utilizes `pixi` and `direnv` to provide a highly automated development environment. The combination of these tools enables:
+This project utilizes `pixi` to provide a highly automated development environment. The combination of `pixi` and (optionally) `direnv` enables:
 
-- **Automatic environment activation** when you enter the project directory
+- **Automatic environment activation** when you enter the project directory (with `direnv`)
 - **Consistent dependency management** across different machines and platforms
 - **Automated setup** of development tools and pre-commit hooks
 
@@ -50,11 +45,11 @@ This project utilizes `pixi` and `direnv` to provide a highly automated developm
 1. **Clone the repository:**
 
    ```bash
-    git clone <your-repository-url>
-   cd
+   git clone https://github.com/jslorrma/litellm-codex-oauth-provider.git
+   cd litellm-codex-oauth-provider
    ```
 
-2. **Allow direnv to load the environment:**
+2. **Allow direnv to load the environment (if using direnv):**
 
    When you first enter the directory, `direnv` will ask for permission:
 
@@ -74,12 +69,17 @@ This project utilizes `pixi` and `direnv` to provide a highly automated developm
 
 ### Manual Installation (If Needed)
 
-If the automated setup doesn't work or you need more control, you can install manually:
+If you are not using `direnv` or the automated setup doesn't work, you can install and activate the environment manually:
 
 ```bash
 # Install the local development environment
 pixi install -e local-dev
 pixi run post-install
+```
+
+To activate the shell manually:
+```bash
+pixi shell
 ```
 
 Or install all environments at once:
@@ -112,4 +112,4 @@ pixi install -e docs
 
 ## Next Steps
 
-Once installation is complete, see [Getting Started](getting-started.md) for details on environments, features, dependency management, and the recommended development workflow.
+Once installation is complete, see [Getting Started](getting-started.md) for details on project structure, development workflow, and available tasks.
