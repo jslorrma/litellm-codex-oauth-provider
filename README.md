@@ -57,10 +57,11 @@ This project uses `pixi` to manage a consistent development environment. To set 
 
 2. **Install dependencies:**
 
-   Using Pixi, install the required dependencies:
+   Using Pixi, install the required dependencies and set up the local development environment:
 
    ```bash
    pixi install -e local-dev
+   pixi run post-install
    ```
 
 3. **Activate the environment:**
