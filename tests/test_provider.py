@@ -49,7 +49,7 @@ def mock_openai_response() -> dict:
         "id": "chatcmpl-123",
         "object": "chat.completion",
         "created": 1677652288,
-        "model": "gpt-4o",
+        "model": "gpt-5.1-codex-max",
         "system_fingerprint": "fp_44709d6fcb",
         "choices": [
             {
@@ -147,7 +147,7 @@ def test_completion_success(
     post_spy = mocker.patch.object(provider, "_post_request", return_value=response)
 
     result = provider.completion(
-        model="codex-oauth/gpt-5.1-codex-low",
+        model="codex/gpt-5.1-codex-low",
         messages=[
             {"role": "system", "content": "toolchain system prompt to ignore"},
             {"role": "user", "content": "Hello"},
@@ -189,7 +189,7 @@ def test_completion_forwards_supported_kwargs(
     temperature = 0.3
     max_output_tokens = 77
     provider.completion(
-        model="codex-oauth/gpt-4o",
+        model="codex/gpt-5.1-codex-max",
         messages=[{"role": "user", "content": "Hello"}],
         temperature=temperature,
         max_tokens=max_output_tokens,
@@ -238,7 +238,7 @@ def test_completion_prepends_bridge_when_tools_present(
     ]
 
     provider.completion(
-        model="codex-oauth/gpt-4o",
+        model="codex/gpt-5.1-codex-max",
         messages=[{"role": "user", "content": "Please request a tool call to read HOME."}],
         tools=tools,
         tool_choice="auto",
@@ -302,7 +302,9 @@ def test_completion_does_not_add_bridge_without_tools(
     )
     post_spy = mocker.patch.object(provider, "_post_request", return_value=response)
 
-    provider.completion(model="codex-oauth/gpt-4o", messages=[{"role": "user", "content": "Hello"}])
+    provider.completion(
+        model="codex/gpt-5.1-codex-max", messages=[{"role": "user", "content": "Hello"}]
+    )
 
     payload = post_spy.call_args.args[1]
     input_messages = payload["input"]
@@ -320,7 +322,7 @@ def test_completion_http_error(mocker: MockerFixture, provider: CodexAuthProvide
 
     with pytest.raises(RuntimeError, match="Codex API error 401"):
         provider.completion(
-            model="codex-oauth/gpt-4o", messages=[{"role": "user", "content": "Hello"}]
+            model="codex/gpt-5.1-codex-max", messages=[{"role": "user", "content": "Hello"}]
         )
 
 
@@ -344,7 +346,7 @@ def test_acompletion_success(
 
     result = asyncio.run(
         provider.acompletion(
-            model="codex-oauth/gpt-4o", messages=[{"role": "user", "content": "Hello"}]
+            model="codex/gpt-5.1-codex-max", messages=[{"role": "user", "content": "Hello"}]
         )
     )
 
@@ -367,11 +369,11 @@ def test_convert_sse_to_json(provider: CodexAuthProvider) -> None:
 
 def test_transform_response(provider: CodexAuthProvider, mock_openai_response: dict) -> None:
     """Given an OpenAI-style response, when transforming, then LiteLLM fields mirror input values."""
-    result = provider._transform_response(mock_openai_response, "gpt-4o")  # noqa: SLF001
+    result = provider._transform_response(mock_openai_response, "gpt-5.1-codex-max")  # noqa: SLF001
 
     assert isinstance(result, ModelResponse)
     assert result.id == "chatcmpl-123"
-    assert result.model == "gpt-4o"
+    assert result.model == "gpt-5.1-codex-max"
     assert result.choices[0].message.content == "Hello, world!"
     assert result.usage.prompt_tokens == PROMPT_TOKENS
     assert result.usage.completion_tokens == COMPLETION_TOKENS
@@ -385,7 +387,7 @@ def test_transform_response_with_tool_calls(provider: CodexAuthProvider) -> None
             "id": "chatcmpl-tool",
             "object": "chat.completion",
             "created": 1_678_000_000,
-            "model": "gpt-4o",
+            "model": "gpt-5.1-codex-max",
             "choices": [
                 {
                     "index": 0,
@@ -414,7 +416,7 @@ def test_transform_response_with_tool_calls(provider: CodexAuthProvider) -> None
         }
     }
 
-    result = provider._transform_response(response, "gpt-4o")  # noqa: SLF001
+    result = provider._transform_response(response, "gpt-5.1-codex-max")  # noqa: SLF001
 
     assert result.choices[0].finish_reason == "tool_calls"
     message = result.choices[0].message
@@ -434,7 +436,7 @@ def test_transform_response_with_top_level_tool_calls(provider: CodexAuthProvide
             "id": "chatcmpl-tool",
             "object": "chat.completion",
             "created": 1_678_000_000,
-            "model": "gpt-4o",
+            "model": "gpt-5.1-codex-max",
             "choices": [
                 {
                     "index": 0,
@@ -459,7 +461,7 @@ def test_transform_response_with_top_level_tool_calls(provider: CodexAuthProvide
         }
     }
 
-    result = provider._transform_response(response, "gpt-4o")  # noqa: SLF001
+    result = provider._transform_response(response, "gpt-5.1-codex-max")  # noqa: SLF001
 
     message = result.choices[0].message
     assert message.tool_calls is not None
@@ -475,7 +477,7 @@ def test_transform_response_falls_back_to_output(provider: CodexAuthProvider) ->
             "id": "chatcmpl-output",
             "object": "chat.completion",
             "created": 1_678_000_000,
-            "model": "gpt-4o",
+            "model": "gpt-5.1-codex-max",
             "choices": [
                 {
                     "index": 0,
@@ -492,7 +494,7 @@ def test_transform_response_falls_back_to_output(provider: CodexAuthProvider) ->
         }
     }
 
-    result = provider._transform_response(response, "gpt-4o")  # noqa: SLF001
+    result = provider._transform_response(response, "gpt-5.1-codex-max")  # noqa: SLF001
 
     assert result.choices[0].message.content == "Hello from output"
 
@@ -504,7 +506,7 @@ def test_transform_response_with_function_call_output(provider: CodexAuthProvide
             "id": "chatcmpl-fc",
             "object": "chat.completion",
             "created": 1_678_000_000,
-            "model": "gpt-4o",
+            "model": "gpt-5.1-codex-max",
             "output": [
                 {
                     "id": "fc_123",
@@ -523,7 +525,7 @@ def test_transform_response_with_function_call_output(provider: CodexAuthProvide
         }
     }
 
-    result = provider._transform_response(response, "gpt-4o")  # noqa: SLF001
+    result = provider._transform_response(response, "gpt-5.1-codex-max")  # noqa: SLF001
 
     message = result.choices[0].message
     assert message.tool_calls is not None
@@ -562,9 +564,7 @@ def test_streaming_wraps_completion(mocker: MockerFixture, provider: CodexAuthPr
         _update_completion_start_time=noop,
     )
 
-    wrapper = provider.streaming(
-        model="codex-oauth/gpt-5.1-codex", messages=[], logging_obj=logging_obj
-    )
+    wrapper = provider.streaming(model="codex/gpt-5.1-codex", messages=[], logging_obj=logging_obj)
 
     first_chunk = next(iter(wrapper))
     assert hasattr(first_chunk, "choices")

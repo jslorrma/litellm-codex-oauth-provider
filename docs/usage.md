@@ -24,7 +24,7 @@ features such as routing, observability, and spend controls.
 
 LiteLLM needs two pieces of information:
 
-- `provider`: the prefix used in model strings (`codex-oauth/<openai-model>`).
+- `provider`: the prefix used in model strings (`codex/<openai-model>`).
 - `custom_handler`: the import path to the handler class.
 
 For this project:
@@ -32,7 +32,7 @@ For this project:
 ```yaml
 litellm_settings:
   custom_provider_map:
-    - provider: codex-oauth
+    - provider: codex
       custom_handler: litellm_codex_oauth_provider.provider.CodexAuthProvider
 ```
 
@@ -47,17 +47,17 @@ general_settings:
 model_list:
   - model_name: chatgpt-plus-gpt-5.1-codex-max
     litellm_params:
-      model: codex-oauth/gpt-5.1-codex-max
+      model: codex/gpt-5.1-codex-max
 
 litellm_settings:
   custom_provider_map:
-    - provider: codex-oauth
+    - provider: codex
       custom_handler: litellm_codex_oauth_provider.provider.CodexAuthProvider
 ```
 
 - `master_key`: the key clients use to talk to your proxy.
 - `model_name`: the alias clients will request.
-- `litellm_params.model`: the actual provider/model string (`codex-oauth/<openai-model>`).
+- `litellm_params.model`: the actual provider/model string (`codex/<openai-model>`).
 - `custom_provider_map`: where LiteLLM learns how to load the handler.
 
 ### Run with the LiteLLM CLI
@@ -116,7 +116,7 @@ Then reuse the curl command above to verify responses.
 
 ### Tips, options, and references
 
-- **Model naming**: always prefix with `codex-oauth/` (e.g., `codex-oauth/gpt-5.1-codex-max`), and
+- **Model naming**: always prefix with `codex/` (e.g., `codex/gpt-5.1-codex-max`), and
   set that in `litellm_params.model`.
 - **Token location**: default is `~/.codex/auth.json`. Keep that path mounted. If you must relocate
   it, adjust `litellm_codex_oauth_provider.constants.DEFAULT_CODEX_AUTH_FILE` (or symlink the
@@ -132,5 +132,5 @@ Then reuse the curl command above to verify responses.
 ### Quick verification checklist
 
 - Codex CLI login succeeded and `~/.codex/auth.json` is mounted/visible.
-- `custom_provider_map` includes `codex-oauth` with the handler path above.
-- `model_list` entries point to `codex-oauth/<model>` and are referenced by `model_name`.
+- `custom_provider_map` includes `codex` with the handler path above.
+- `model_list` entries point to `codex/<model>` and are referenced by `model_name`.

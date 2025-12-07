@@ -56,12 +56,12 @@ from litellm_codex_oauth_provider import codex_auth_provider
 
 # Register the custom provider
 litellm.custom_provider_map = [
-    {"provider": "codex-oauth", "custom_handler": CodexAuthProvider}
+    {"provider": "codex", "custom_handler": CodexAuthProvider}
 ]
 
 # Use with LiteLLM
 response = litellm.completion(
-    model="codex-oauth/gpt-5.1-codex-max",
+    model="codex/gpt-5.1-codex-max",
     messages=[
         {"role": "user", "content": "Write a Python function to reverse a string"}
     ],
@@ -94,23 +94,23 @@ model_list:
   # CHATGPT PLUS via Codex OAuth (Your custom provider)
   - model_name: chatgpt-plus-gpt-5.1-codex-max
     litellm_params:
-      model: codex-oauth/gpt-5.1-codex-max
+      model: codex/gpt-5.1-codex-max
       # No API key needed - uses Codex auth.json
 
   - model_name: chatgpt-plus-gpt-5.1-codex
     litellm_params:
-      model: codex-oauth/gpt-5.1-codex
+      model: codex/gpt-5.1-codex
 
   - model_name: chatgpt-plus-gpt-5.1
     litellm_params:
-      model: codex-oauth/gpt-5.1
+      model: codex/gpt-5.1
 
 # ============================================
 # CUSTOM PROVIDER REGISTRATION
 # ============================================
 litellm_settings:
   custom_provider_map:
-    - provider: "codex-oauth"
+    - provider: "codex"
       custom_handler: litellm_codex_oauth_provider.provider.codex_auth_provider
 ```
 
