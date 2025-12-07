@@ -1,12 +1,12 @@
 # yamllint disable rule:indentation
-site_description: "Bitc Data SDK is a proposed unified data access and processing framework for Bitc, designed to streamline data handling, improve modularity, and enhance flexibility across different storage and processing backends."
-site_name: "Bitc Data Sdk"
+site_description: "LiteLLM Codex OAuth Provider bridges Codex CLI authentication to OpenAI-compatible APIs for LiteLLM."
+site_name: "LiteLLM Codex OAuth Provider"
 site_author: ""
 
 copyright: Copyright (c) 2025 Bitc Data SDK contributors.
 edit_uri_template: 'edit/develop/docs/{path}'
-repo_name: "bitc-data-sdk"
-repo_url: "https://dev.azure.com/bicecs/BitC-Platform/_git/bitc-data-sdk"
+repo_name: "litellm-codex-oauth-provider"
+repo_url: "https://github.com/jslorrma/litellm-codex-oauth-provider"
 
 nav:
     - Home: index.md
@@ -17,6 +17,7 @@ nav:
         - Getting Started: development/getting-started.md
         - Installation: development/installation.md
         - Contributing: CONTRIBUTING.md
+    - Usage (LiteLLM Proxy): usage.md
 
 theme:
   name: material
