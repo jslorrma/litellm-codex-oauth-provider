@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from litellm import Choices, Message, ModelResponse
 from litellm.types.utils import GenericStreamingChunk, Usage
+from openai.types.responses import Response, ResponseStreamEvent
 
 if TYPE_CHECKING:
     import httpx
@@ -24,9 +25,11 @@ def parse_response_body(response: httpx.Response) -> dict[str, Any]:
             return parsed
         raise RuntimeError("Codex API returned stream without final response event")
     try:
-        return response.json()
+        return Response.model_validate_json(response.content).model_dump()
     except json.JSONDecodeError as exc:
         raise RuntimeError("Codex API returned invalid JSON") from exc
+    except Exception:
+        return response.json()
 
 
 def convert_sse_to_json(payload: str) -> dict[str, Any]:
@@ -44,6 +47,10 @@ def convert_sse_to_json(payload: str) -> dict[str, Any]:
             continue
         if isinstance(event, Mapping):
             events.append(event)
+
+    validated = _extract_validated_response_from_events(events)
+    if validated:
+        return validated
 
     return _extract_response_from_events(events)
 
@@ -71,6 +78,7 @@ def transform_response(openai_response: dict[str, Any], model: str) -> ModelResp
         "system_fingerprint"
     )
     finish_reason = _resolve_finish_reason(primary_choice, tool_calls)
+    created = response_payload.get("created") or response_payload.get("created_at")
 
     return ModelResponse(
         id=response_payload.get("id") or openai_response.get("id", ""),
@@ -86,7 +94,7 @@ def transform_response(openai_response: dict[str, Any], model: str) -> ModelResp
                 ),
             )
         ],
-        created=response_payload.get("created", int(time.time())),
+        created=int(created or time.time()),
         model=response_payload.get("model", model),
         object=response_payload.get("object", "chat.completion"),
         system_fingerprint=system_fingerprint,
@@ -132,6 +140,23 @@ def _extract_response_from_events(events: list[dict[str, Any]]) -> dict[str, Any
         if isinstance(last, Mapping):
             return dict(last)
     return {}
+
+
+def _extract_validated_response_from_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Validate SSE events using OpenAI typed models."""
+    for event in reversed(events):
+        try:
+            typed_event = ResponseStreamEvent.model_validate(event)
+        except Exception:
+            continue
+        response_payload = getattr(typed_event, "response", None)
+        if response_payload is None:
+            continue
+        try:
+            return Response.model_validate(response_payload).model_dump()
+        except Exception:
+            continue
+    return None
 
 
 def _build_usage(usage: Mapping[str, Any] | None) -> Usage:

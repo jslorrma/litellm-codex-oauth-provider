@@ -6,6 +6,7 @@ authentication to access ChatGPT Plus models through OpenAI API.
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from collections.abc import Mapping
@@ -14,15 +15,19 @@ from typing import Any
 import httpx
 from litellm import CustomLLM, ModelResponse
 from litellm.utils import CustomStreamWrapper
+from openai import APIError, APIStatusError
 
 from . import constants
 from .adapter import build_streaming_chunk, parse_response_body, transform_response
 from .auth import _decode_account_id, _refresh_token, get_auth_context
 from .exceptions import CodexAuthTokenExpiredError
 from .model_map import normalize_model, strip_provider_prefix
+from .openai_client import AsyncCodexOpenAIClient, CodexOpenAIClient
 from .prompts import DEFAULT_INSTRUCTIONS, build_tool_bridge_message, derive_instructions
 from .reasoning import apply_reasoning_config
 from .remote_resources import fetch_codex_instructions
+
+logger = logging.getLogger(__name__)
 
 
 class CodexAuthProvider(CustomLLM):
@@ -31,11 +36,22 @@ class CodexAuthProvider(CustomLLM):
     def __init__(self) -> None:
         """Initialize the CodexAuthProvider."""
         super().__init__()
-        self.base_url = constants.CODEX_API_BASE_URL
+        self._maybe_enable_debug_logging()
+        self.base_url = self._resolve_base_url(None)
         self._cached_token: str | None = None
         self._token_expiry: float | None = None
         self._account_id: str | None = None
         self._codex_mode_enabled = self._resolve_codex_mode()
+        self._client = CodexOpenAIClient(
+            token_provider=self.get_bearer_token,
+            account_id_provider=self._resolve_account_id,
+            base_url=self.base_url,
+        )
+        self._async_client = AsyncCodexOpenAIClient(
+            token_provider=self.get_bearer_token,
+            account_id_provider=self._resolve_account_id,
+            base_url=self.base_url,
+        )
 
     @property
     def cached_token(self) -> str | None:
@@ -52,12 +68,34 @@ class CodexAuthProvider(CustomLLM):
         """Return the cached ChatGPT account ID, if present."""
         return self._account_id
 
+    def _resolve_account_id(self) -> str | None:
+        if self._account_id:
+            return self._account_id
+        if self._cached_token:
+            return _decode_account_id(self._cached_token)
+        return None
+
+    def _resolve_base_url(self, api_base: str | None) -> str:
+        base = (api_base or constants.CODEX_API_BASE_URL).rstrip("/")
+        if base.endswith(constants.CODEX_RESPONSES_ENDPOINT):
+            base = base[: -len(constants.CODEX_RESPONSES_ENDPOINT)]
+        if base.endswith(constants.OPENAI_RESPONSES_ENDPOINT):
+            base = base[: -len(constants.OPENAI_RESPONSES_ENDPOINT)]
+        if not base.endswith("/codex"):
+            base = f"{base}/codex"
+        return base
+
     def _resolve_codex_mode(self) -> bool:
         """Resolve CODEX_MODE feature flag."""
         env_value = os.getenv(constants.CODEX_MODE_ENV)
         if env_value is None:
             return constants.DEFAULT_CODEX_MODE
         return env_value.strip().lower() not in {"0", "false", "off"}
+
+    def _maybe_enable_debug_logging(self) -> None:
+        if os.getenv("CODEX_DEBUG", "").lower() in {"1", "true", "yes", "on", "debug"}:
+            logging.basicConfig(level=logging.DEBUG)
+            logger.debug("CODEX_DEBUG enabled; debug logging active.")
 
     def get_bearer_token(self) -> str:
         """Get bearer token with caching and refresh handling."""
@@ -86,31 +124,6 @@ class CodexAuthProvider(CustomLLM):
         self._token_expiry = time.time() + constants.TOKEN_DEFAULT_EXPIRY_SECONDS
         return context.access_token
 
-    def _rewrite_url(self, api_base: str | None) -> str:
-        base = (api_base or self.base_url).rstrip("/")
-        if base.endswith(constants.CODEX_RESPONSES_ENDPOINT):
-            return base
-        if base.endswith(constants.OPENAI_RESPONSES_ENDPOINT):
-            base = base[: -len(constants.OPENAI_RESPONSES_ENDPOINT)]
-        return f"{base}{constants.CODEX_RESPONSES_ENDPOINT}"
-
-    def _build_headers(self, bearer_token: str, *, prompt_cache_key: str | None) -> dict[str, str]:
-        account_id = self._account_id or _decode_account_id(bearer_token)
-        headers = {
-            "Authorization": f"Bearer {bearer_token}",
-            "Content-Type": "application/json",
-            "accept": "text/event-stream",
-            constants.CHATGPT_ACCOUNT_HEADER: account_id,
-            constants.OPENAI_BETA_HEADER: constants.OPENAI_BETA_VALUE,
-            constants.OPENAI_ORIGINATOR_HEADER: constants.OPENAI_ORIGINATOR_VALUE,
-        }
-
-        if prompt_cache_key:
-            headers[constants.SESSION_ID_HEADER] = prompt_cache_key
-            headers[constants.CONVERSATION_ID_HEADER] = prompt_cache_key
-
-        return headers
-
     def _build_payload(
         self,
         *,
@@ -132,7 +145,6 @@ class CodexAuthProvider(CustomLLM):
             "instructions": instructions or DEFAULT_INSTRUCTIONS,
             "include": [constants.REASONING_INCLUDE_TARGET],
             "store": False,
-            "stream": True,
             **reasoning_config,
             **optional_params,  # deprecated fallback
         }
@@ -147,6 +159,21 @@ class CodexAuthProvider(CustomLLM):
 
         return payload
 
+    def _build_extra_headers(self, prompt_cache_key: str | None) -> dict[str, str]:
+        headers: dict[str, str] = {
+            "accept": "text/event-stream",
+            "Content-Type": "application/json",
+            constants.OPENAI_BETA_HEADER: constants.OPENAI_BETA_VALUE,
+            constants.OPENAI_ORIGINATOR_HEADER: constants.OPENAI_ORIGINATOR_VALUE,
+        }
+        account_id = self._resolve_account_id()
+        if account_id:
+            headers[constants.CHATGPT_ACCOUNT_HEADER] = account_id
+        if prompt_cache_key:
+            headers[constants.SESSION_ID_HEADER] = prompt_cache_key
+            headers[constants.CONVERSATION_ID_HEADER] = prompt_cache_key
+        return headers
+
     def _prepare_input(
         self, *, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None
     ) -> list[dict[str, Any]]:
@@ -156,25 +183,41 @@ class CodexAuthProvider(CustomLLM):
             input_messages = [build_tool_bridge_message(), *input_messages]
         return input_messages
 
+    def _get_sync_client(self, base_url: str) -> CodexOpenAIClient:
+        if base_url == self.base_url:
+            return self._client
+        return CodexOpenAIClient(
+            token_provider=self.get_bearer_token,
+            account_id_provider=self._resolve_account_id,
+            base_url=base_url,
+        )
+
+    def _get_async_client(self, base_url: str) -> AsyncCodexOpenAIClient:
+        if base_url == self.base_url:
+            return self._async_client
+        return AsyncCodexOpenAIClient(
+            token_provider=self.get_bearer_token,
+            account_id_provider=self._resolve_account_id,
+            base_url=base_url,
+        )
+
     @staticmethod
     def _filter_payload_options(options: Mapping[str, Any]) -> dict[str, Any]:
         passthrough_keys = {
-            "frequency_penalty",
-            "logprobs",
+            "background",
             "max_output_tokens",
-            "max_tokens",
             "metadata",
-            "n",
             "parallel_tool_calls",
-            "presence_penalty",
-            "response_format",
-            "seed",
-            "stop",
+            "prompt",
+            "prompt_cache_retention",
+            "safety_identifier",
+            "service_tier",
             "temperature",
             "tool_choice",
             "top_logprobs",
             "top_p",
             "user",
+            "max_tool_calls",
         }
         passthrough = {
             key: value
@@ -182,10 +225,7 @@ class CodexAuthProvider(CustomLLM):
             if key in passthrough_keys and value is not None
         }
 
-        if "tools" in passthrough:
-            passthrough["tools"] = CodexAuthProvider._normalize_tools(passthrough["tools"])
-
-        max_tokens = passthrough.pop("max_tokens", None)
+        max_tokens = options.get("max_tokens")
         if max_tokens is not None and "max_output_tokens" not in passthrough:
             passthrough["max_output_tokens"] = max_tokens
 
@@ -216,6 +256,7 @@ class CodexAuthProvider(CustomLLM):
                 tool_dict.setdefault("name", name)
                 tool_dict.setdefault("description", function_payload.get("description"))
                 tool_dict.setdefault("parameters", function_payload.get("parameters", {}))
+                tool_dict.setdefault("strict", function_payload.get("strict"))
             elif not tool_dict.get("name"):
                 raise ValueError("Each tool must include name per OpenAI tools schema.")
 
@@ -233,10 +274,12 @@ class CodexAuthProvider(CustomLLM):
     ) -> ModelResponse:
         """Completion method - required by LiteLLM CustomLLM interface."""
         _ = custom_llm_provider  # parameter reserved by LiteLLM interface
+        _ = api_base  # maintained for LiteLLM interface compatibility
 
         kwargs = dict(kwargs)
         prompt_cache_key = kwargs.pop("prompt_cache_key", None)
-        bearer_token = self.get_bearer_token()
+        base_url = self._resolve_base_url(api_base)
+        self.get_bearer_token()
 
         normalized_model = normalize_model(strip_provider_prefix(model))
         instructions_text = (
@@ -263,19 +306,21 @@ class CodexAuthProvider(CustomLLM):
             reasoning_config=reasoning_config,
             **kwargs,
         )
-        headers = self._build_headers(bearer_token, prompt_cache_key=prompt_cache_key)
-
-        response = self._post_request(self._rewrite_url(api_base), payload, headers)
-        data = parse_response_body(response)
+        headers = self._build_extra_headers(prompt_cache_key)
+        data = self._dispatch_response_request(
+            payload=payload, extra_headers=headers, base_url=base_url
+        )
         return transform_response(data, normalized_model)
 
     async def acompletion(
         self, model: str, messages: list[dict[str, Any]], api_base: str | None = None, **kwargs: Any
     ) -> ModelResponse:
         """Async completion for LiteLLM usage."""
+        _ = api_base  # maintained for LiteLLM interface compatibility
         kwargs = dict(kwargs)
         prompt_cache_key = kwargs.pop("prompt_cache_key", None)
-        bearer_token = self.get_bearer_token()
+        base_url = self._resolve_base_url(api_base)
+        self.get_bearer_token()
 
         normalized_model = normalize_model(strip_provider_prefix(model))
         instructions_text = (
@@ -302,10 +347,11 @@ class CodexAuthProvider(CustomLLM):
             reasoning_config=reasoning_config,
             **kwargs,
         )
-        headers = self._build_headers(bearer_token, prompt_cache_key=prompt_cache_key)
+        headers = self._build_extra_headers(prompt_cache_key)
 
-        response = await self._post_request_async(self._rewrite_url(api_base), payload, headers)
-        data = parse_response_body(response)
+        data = await self._dispatch_response_request_async(
+            payload=payload, extra_headers=headers, base_url=base_url
+        )
         return transform_response(data, normalized_model)
 
     def streaming(
@@ -363,31 +409,171 @@ class CodexAuthProvider(CustomLLM):
             custom_llm_provider=custom_llm_provider or "codex",
         )
 
-    def _post_request(
-        self, url: str, payload: dict[str, Any], headers: dict[str, str]
-    ) -> httpx.Response:
+    def _dispatch_response_request(
+        self, *, payload: dict[str, Any], extra_headers: dict[str, str], base_url: str
+    ) -> dict[str, Any]:
+        client = self._get_sync_client(base_url)
+        self._log_request_debug(base_url, payload, extra_headers)
         try:
-            with httpx.Client(timeout=60.0) as client:
-                response = client.post(url, json=payload, headers=headers)
-                response.raise_for_status()
-                return response
-        except httpx.HTTPStatusError as exc:
+            with client.responses.stream(
+                extra_headers=extra_headers or None,
+                **payload,
+            ) as stream:
+                final_response = stream.get_final_response()
+        except APIStatusError as exc:
+            self._log_api_error(exc)
+            if self._is_cloudflare_response(exc.response):
+                return self._dispatch_via_httpx(
+                    client=client, payload=payload, extra_headers=extra_headers
+                )
             raise RuntimeError(self._format_http_error(exc.response)) from exc
-        except httpx.RequestError as exc:  # pragma: no cover - network/transport errors
+        except APIError as exc:
+            logger.error("Codex API error (APIError): %s", exc)
+            raise RuntimeError(f"Codex API error: {exc}") from exc
+        except httpx.HTTPError as exc:  # pragma: no cover - network/transport errors
             raise RuntimeError(f"Codex API error: {exc}") from exc
 
-    async def _post_request_async(
-        self, url: str, payload: dict[str, Any], headers: dict[str, str]
-    ) -> httpx.Response:
+        return final_response.model_dump()
+
+    async def _dispatch_response_request_async(
+        self, *, payload: dict[str, Any], extra_headers: dict[str, str], base_url: str
+    ) -> dict[str, Any]:
+        client = self._get_async_client(base_url)
+        self._log_request_debug(base_url, payload, extra_headers)
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(url, json=payload, headers=headers)
-                response.raise_for_status()
-                return response
-        except httpx.HTTPStatusError as exc:
+            async with client.responses.stream(
+                extra_headers=extra_headers or None,
+                **payload,
+            ) as stream:
+                final_response = await stream.get_final_response()
+        except APIStatusError as exc:
+            self._log_api_error(exc)
+            if self._is_cloudflare_response(exc.response):
+                return await self._dispatch_via_httpx_async(
+                    client=client, payload=payload, extra_headers=extra_headers
+                )
             raise RuntimeError(self._format_http_error(exc.response)) from exc
-        except httpx.RequestError as exc:  # pragma: no cover - network/transport errors
+        except APIError as exc:
+            logger.error("Codex API error (APIError): %s", exc)
             raise RuntimeError(f"Codex API error: {exc}") from exc
+        except httpx.HTTPError as exc:  # pragma: no cover - network/transport errors
+            raise RuntimeError(f"Codex API error: {exc}") from exc
+
+        return final_response.model_dump()
+
+    def _log_request_debug(
+        self, base_url: str, payload: Mapping[str, Any], extra_headers: Mapping[str, str]
+    ) -> None:
+        if not logger.isEnabledFor(logging.DEBUG):
+            return
+        sanitized_headers = {
+            key: ("***" if key.lower() == "authorization" else value)
+            for key, value in extra_headers.items()
+        }
+        model = payload.get("model")
+        prompt_cache_key = payload.get("prompt_cache_key")
+        include = payload.get("include")
+        reasoning = payload.get("reasoning")
+        tools = payload.get("tools") or []
+        input_messages = payload.get("input") or []
+        logger.debug(
+            "Dispatching Codex responses request",
+            extra={
+                "base_url": base_url,
+                "model": model,
+                "input_len": len(input_messages),
+                "tools_len": len(tools),
+                "include": include,
+                "prompt_cache_key": prompt_cache_key,
+                "reasoning": reasoning,
+                "headers": sanitized_headers,
+            },
+        )
+
+    def _log_api_error(self, exc: APIStatusError) -> None:
+        if not logger.isEnabledFor(logging.DEBUG):
+            return
+        try:
+            body = exc.response.text
+        except Exception:  # pragma: no cover - logging only
+            body = "<unreadable>"
+        logger.debug(
+            "Codex API status error",
+            extra={
+                "status_code": exc.status_code,
+                "request_url": str(exc.response.url),
+                "response_body": body,
+                "response_headers": dict(exc.response.headers),
+            },
+        )
+
+    @staticmethod
+    def _is_cloudflare_response(response: httpx.Response | None) -> bool:
+        if response is None:
+            return False
+        content_type = (response.headers.get("content-type") or "").lower()
+        body = response.content.lower() if response.content else b""
+        return "text/html" in content_type and b"cloudflare" in body
+
+    def _dispatch_via_httpx(
+        self,
+        *,
+        client: CodexOpenAIClient,
+        payload: Mapping[str, Any],
+        extra_headers: Mapping[str, str],
+    ) -> dict[str, Any]:
+        payload_with_stream = dict(payload)
+        payload_with_stream.setdefault("stream", True)
+        headers = {
+            **extra_headers,
+            "Accept": "text/event-stream",
+            "Content-Type": "application/json",
+        }
+        headers.setdefault("Authorization", client.auth_headers.get("Authorization", ""))
+        cookie_header = "; ".join(
+            f"{name}={value}"
+            for name, value in client.http_client.cookies.items()  # type: ignore[attr-defined]
+        )
+        if cookie_header:
+            headers["Cookie"] = cookie_header
+
+        response = client.http_client.post(  # type: ignore[attr-defined]
+            "/responses",
+            json=payload_with_stream,
+            headers=headers,
+        )
+        response.raise_for_status()
+        return parse_response_body(response)
+
+    async def _dispatch_via_httpx_async(
+        self,
+        *,
+        client: AsyncCodexOpenAIClient,
+        payload: Mapping[str, Any],
+        extra_headers: Mapping[str, str],
+    ) -> dict[str, Any]:
+        payload_with_stream = dict(payload)
+        payload_with_stream.setdefault("stream", True)
+        headers = {
+            **extra_headers,
+            "Accept": "text/event-stream",
+            "Content-Type": "application/json",
+        }
+        headers.setdefault("Authorization", client.auth_headers.get("Authorization", ""))
+        cookie_header = "; ".join(
+            f"{name}={value}"
+            for name, value in client.http_client.cookies.items()  # type: ignore[attr-defined]
+        )
+        if cookie_header:
+            headers["Cookie"] = cookie_header
+
+        response = await client.http_client.post(  # type: ignore[attr-defined]
+            "/responses",
+            json=payload_with_stream,
+            headers=headers,
+        )
+        response.raise_for_status()
+        return parse_response_body(response)
 
     def _format_http_error(self, response: httpx.Response) -> str:
         detail = ""
