@@ -5,6 +5,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+# Defaults
+DEFAULT_INSTRUCTIONS = "You are a helpful assistant."
+
 # Default paths
 _auth_file_override = os.getenv("CODEX_AUTH_FILE")
 if _auth_file_override:
