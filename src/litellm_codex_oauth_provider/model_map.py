@@ -49,7 +49,10 @@ MODEL_MAP: Final[dict[str, str]] = _build_model_map()
 
 def strip_provider_prefix(model: str) -> str:
     """Remove LiteLLM provider prefixes from a model identifier."""
-    return model.replace("codex/", "").replace("codex-", "").strip()
+    for prefix in ("codex-oauth/", "codex/", "codex-"):
+        if model.startswith(prefix):
+            return model[len(prefix) :].strip()
+    return model.strip()
 
 
 def normalize_model(model: str) -> str:

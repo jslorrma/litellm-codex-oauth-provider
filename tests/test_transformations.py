@@ -25,7 +25,7 @@ def mock_codex_instructions(mocker: MockerFixture) -> None:
 
 def test_normalize_model_handles_alias_and_suffix() -> None:
     """Given a prefixed legacy model, when normalized, then codex base name is returned."""
-    normalized = normalize_model("codex-oauth/gpt-5-codex-high")
+    normalized = normalize_model("codex/gpt-5-codex-high")
     assert normalized == "gpt-5.1-codex"
 
 

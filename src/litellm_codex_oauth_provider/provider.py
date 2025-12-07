@@ -357,7 +357,7 @@ class CodexAuthProvider(CustomLLM):
             stream,
             model,
             logging_obj=logging_obj,
-            custom_llm_provider=custom_llm_provider or "codex-oauth",
+            custom_llm_provider=custom_llm_provider or "codex",
         )
 
     async def astreaming(
@@ -386,7 +386,7 @@ class CodexAuthProvider(CustomLLM):
             async_stream(),
             model,
             logging_obj=logging_obj,
-            custom_llm_provider=custom_llm_provider or "codex-oauth",
+            custom_llm_provider=custom_llm_provider or "codex",
         )
 
     def _post_request(
