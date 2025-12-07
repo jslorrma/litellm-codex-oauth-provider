@@ -10,14 +10,19 @@ repo_url: "https://github.com/jslorrma/litellm-codex-oauth-provider"
 
 nav:
     - Home: index.md
-    - Reference: reference.md
-    - Changelog: changelog.md
-    - Assessment: comprehensive_state_assessment.md
+    - Architecture:
+        - Overview: architecture.md
+        - Codex API Integration: codex-api-integration.md
+    - API Reference:
+        - Complete API Reference: api-reference.md
+    - Usage:
+        - LiteLLM Proxy Setup: usage.md
+        - Usage Examples: usage-examples.md
     - Development:
         - Getting Started: development/getting-started.md
         - Installation: development/installation.md
         - Contributing: CONTRIBUTING.md
-    - Usage (LiteLLM Proxy): usage.md
+    - Changelog: changelog.md
 
 theme:
   name: material
