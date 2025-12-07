@@ -2,25 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-import pytest
-
 from litellm_codex_oauth_provider.model_map import normalize_model
-from litellm_codex_oauth_provider.prompts import TOOL_REMAP_PROMPT, derive_instructions
+from litellm_codex_oauth_provider.prompts import (
+    TOOL_REMAP_PROMPT,
+    _to_codex_input,
+    derive_instructions,
+)
 from litellm_codex_oauth_provider.reasoning import apply_reasoning_config
-
-if TYPE_CHECKING:
-    from pytest_mock import MockerFixture
-
-
-@pytest.fixture(autouse=True)
-def mock_codex_instructions(mocker: MockerFixture) -> None:
-    """Avoid network fetch during instruction derivation."""
-    mocker.patch(
-        "litellm_codex_oauth_provider.prompts.get_codex_instructions",
-        return_value="codex instructions",
-    )
 
 
 def test_normalize_model_handles_alias_and_suffix() -> None:
@@ -54,7 +42,7 @@ def test_reasoning_config_rewrites_minimal_for_codex() -> None:
 
 
 def test_derive_instructions_filters_legacy_toolchain_prompts() -> None:
-    """Given legacy toolchain system prompts, when CODEX mode is on, then Codex instructions are used."""
+    """Given legacy toolchain prompts in Codex mode, then Codex instructions are used."""
     instructions, filtered_messages = derive_instructions(
         [
             {"role": "system", "content": "toolchain system prompt content"},
@@ -62,6 +50,7 @@ def test_derive_instructions_filters_legacy_toolchain_prompts() -> None:
         ],
         codex_mode=True,
         normalized_model="gpt-5.1-codex",
+        instructions_text="codex instructions",
     )
 
     assert instructions == "codex instructions"
@@ -79,3 +68,31 @@ def test_derive_instructions_tool_remap_mode() -> None:
 
     assert TOOL_REMAP_PROMPT.splitlines()[0] in instructions
     assert filtered_messages == [{"type": "message", "content": "Ping", "role": "user"}]
+
+
+def test_to_codex_input_user_message() -> None:
+    """Given a user message, when converted, then Codex input schema is produced."""
+    msg = {"role": "user", "content": "Hello", "id": "abc123"}
+    result = _to_codex_input(msg)
+    assert result == {"type": "message", "content": "Hello", "role": "user"}
+
+
+def test_to_codex_input_tool_call() -> None:
+    """Given a tool call message, when converted, then function_call schema is emitted."""
+    msg = {"role": "assistant", "tool_calls": [{"name": "foo", "arguments": {"x": 1}}]}
+    result = _to_codex_input(msg)
+
+    assert result["type"] == "function_call"
+    assert result["function_call"]["name"] == "foo"
+    assert '"x": 1' in result["function_call"]["arguments"]
+
+
+def test_to_codex_input_tool_role_output() -> None:
+    """Given a tool role output, when converted, then function_call_output schema is emitted."""
+    msg = {"role": "tool", "tool_call_id": "call-1", "content": {"foo": "bar"}}
+
+    result = _to_codex_input(msg)
+
+    assert result["type"] == "function_call_output"
+    assert result["output"]["tool_call_id"] == "call-1"
+    assert result["output"]["content"] == {"foo": "bar"}

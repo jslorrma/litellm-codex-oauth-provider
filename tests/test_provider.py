@@ -11,6 +11,7 @@ import pytest
 from litellm import Choices, Message, ModelResponse
 
 from litellm_codex_oauth_provider import constants
+from litellm_codex_oauth_provider.adapter import convert_sse_to_json, transform_response
 from litellm_codex_oauth_provider.auth import AuthContext
 from litellm_codex_oauth_provider.exceptions import CodexAuthTokenExpiredError
 from litellm_codex_oauth_provider.prompts import TOOL_BRIDGE_PROMPT
@@ -36,10 +37,11 @@ def provider() -> CodexAuthProvider:
 @pytest.fixture(autouse=True)
 def mock_codex_instructions(mocker: MockerFixture) -> None:
     """Prevent network fetch for instructions during tests."""
-    mocker.patch(
-        "litellm_codex_oauth_provider.prompts.get_codex_instructions",
-        return_value="codex instructions",
-    )
+    for target in (
+        "litellm_codex_oauth_provider.remote_resources.fetch_codex_instructions",
+        "litellm_codex_oauth_provider.provider.fetch_codex_instructions",
+    ):
+        mocker.patch(target, return_value="codex instructions")
 
 
 @pytest.fixture
@@ -133,7 +135,7 @@ def test_completion_success(
     provider: CodexAuthProvider,
     mock_openai_response: dict,
 ) -> None:
-    """Given valid auth and API response, when completion is called, then payload and response align."""
+    """Given valid auth and API response, completion returns the expected payload."""
     mocker.patch(
         "litellm_codex_oauth_provider.provider.get_auth_context",
         return_value=AuthContext(access_token="test.token", account_id="acct-1"),
@@ -173,7 +175,7 @@ def test_completion_forwards_supported_kwargs(
     provider: CodexAuthProvider,
     mock_openai_response: dict,
 ) -> None:
-    """Given optional LiteLLM kwargs, when completion runs, then payload forwards supported params."""
+    """Given optional LiteLLM kwargs, completion forwards supported params."""
     mocker.patch(
         "litellm_codex_oauth_provider.provider.get_auth_context",
         return_value=AuthContext(access_token="test.token", account_id="acct-1"),
@@ -214,7 +216,7 @@ def test_completion_prepends_bridge_when_tools_present(
     provider: CodexAuthProvider,
     mock_openai_response: dict,
 ) -> None:
-    """Given tools, when completion runs, then bridge prompt is prepended and tools are forwarded."""
+    """Given tools, completion prepends the bridge prompt and forwards tools."""
     mocker.patch(
         "litellm_codex_oauth_provider.provider.get_auth_context",
         return_value=AuthContext(access_token="test.token", account_id="acct-1"),
@@ -331,7 +333,7 @@ def test_acompletion_success(
     provider: CodexAuthProvider,
     mock_openai_response: dict,
 ) -> None:
-    """Given valid auth and API response, when acompletion is awaited, then a ModelResponse returns."""
+    """Given valid auth and API response, awaiting acompletion yields a ModelResponse."""
     mocker.patch(
         "litellm_codex_oauth_provider.provider.get_auth_context",
         return_value=AuthContext(access_token="test.token", account_id="acct-1"),
@@ -354,7 +356,7 @@ def test_acompletion_success(
     assert result.choices[0].message.content == "Hello, world!"
 
 
-def test_convert_sse_to_json(provider: CodexAuthProvider) -> None:
+def test_convert_sse_to_json() -> None:
     """Given buffered SSE data, when converted, then the response payload is extracted."""
     payload = (
         'data: {"type": "response.done", "response": {"id": "1", "choices": '
@@ -362,14 +364,14 @@ def test_convert_sse_to_json(provider: CodexAuthProvider) -> None:
         "data: [DONE]"
     )
 
-    parsed = provider._convert_sse_to_json(payload)  # noqa: SLF001
+    parsed = convert_sse_to_json(payload)
 
     assert parsed["choices"][0]["message"]["content"] == "Hello"
 
 
-def test_transform_response(provider: CodexAuthProvider, mock_openai_response: dict) -> None:
-    """Given an OpenAI-style response, when transforming, then LiteLLM fields mirror input values."""
-    result = provider._transform_response(mock_openai_response, "gpt-5.1-codex-max")  # noqa: SLF001
+def test_transform_response(mock_openai_response: dict) -> None:
+    """Given an OpenAI-style response, transform_response mirrors input values."""
+    result = transform_response(mock_openai_response, "gpt-5.1-codex-max")
 
     assert isinstance(result, ModelResponse)
     assert result.id == "chatcmpl-123"
@@ -380,8 +382,8 @@ def test_transform_response(provider: CodexAuthProvider, mock_openai_response: d
     assert result.usage.total_tokens == TOTAL_TOKENS
 
 
-def test_transform_response_with_tool_calls(provider: CodexAuthProvider) -> None:
-    """Given a tool-calling response, when transforming, then tool calls are preserved."""
+def test_transform_response_with_tool_calls() -> None:
+    """Given a tool-calling response, transform_response preserves tool calls."""
     response = {
         "response": {
             "id": "chatcmpl-tool",
@@ -416,7 +418,7 @@ def test_transform_response_with_tool_calls(provider: CodexAuthProvider) -> None
         }
     }
 
-    result = provider._transform_response(response, "gpt-5.1-codex-max")  # noqa: SLF001
+    result = transform_response(response, "gpt-5.1-codex-max")
 
     assert result.choices[0].finish_reason == "tool_calls"
     message = result.choices[0].message
@@ -429,7 +431,7 @@ def test_transform_response_with_tool_calls(provider: CodexAuthProvider) -> None
     assert message.content is None
 
 
-def test_transform_response_with_top_level_tool_calls(provider: CodexAuthProvider) -> None:
+def test_transform_response_with_top_level_tool_calls() -> None:
     """Given Codex-style tool calls (name/arguments at top level), then tool calls are parsed."""
     response = {
         "response": {
@@ -461,7 +463,7 @@ def test_transform_response_with_top_level_tool_calls(provider: CodexAuthProvide
         }
     }
 
-    result = provider._transform_response(response, "gpt-5.1-codex-max")  # noqa: SLF001
+    result = transform_response(response, "gpt-5.1-codex-max")
 
     message = result.choices[0].message
     assert message.tool_calls is not None
@@ -470,8 +472,8 @@ def test_transform_response_with_top_level_tool_calls(provider: CodexAuthProvide
     assert message.content is None
 
 
-def test_transform_response_falls_back_to_output(provider: CodexAuthProvider) -> None:
-    """Given empty content but output field, when transforming, then content is derived from output."""
+def test_transform_response_falls_back_to_output() -> None:
+    """Given empty content but output field, transform_response derives content from output."""
     response = {
         "response": {
             "id": "chatcmpl-output",
@@ -494,13 +496,13 @@ def test_transform_response_falls_back_to_output(provider: CodexAuthProvider) ->
         }
     }
 
-    result = provider._transform_response(response, "gpt-5.1-codex-max")  # noqa: SLF001
+    result = transform_response(response, "gpt-5.1-codex-max")
 
     assert result.choices[0].message.content == "Hello from output"
 
 
-def test_transform_response_with_function_call_output(provider: CodexAuthProvider) -> None:
-    """Given function_call output items, when transforming, then tool_calls are emitted."""
+def test_transform_response_with_function_call_output() -> None:
+    """Given function_call output items, transform_response emits tool_calls."""
     response = {
         "response": {
             "id": "chatcmpl-fc",
@@ -525,7 +527,7 @@ def test_transform_response_with_function_call_output(provider: CodexAuthProvide
         }
     }
 
-    result = provider._transform_response(response, "gpt-5.1-codex-max")  # noqa: SLF001
+    result = transform_response(response, "gpt-5.1-codex-max")
 
     message = result.choices[0].message
     assert message.tool_calls is not None
@@ -536,7 +538,7 @@ def test_transform_response_with_function_call_output(provider: CodexAuthProvide
 
 
 def test_streaming_wraps_completion(mocker: MockerFixture, provider: CodexAuthProvider) -> None:
-    """Given streaming call, when invoked, then completion result is wrapped in CustomStreamWrapper."""
+    """Given streaming call, completion result is wrapped in CustomStreamWrapper."""
 
     def noop(*_args: object, **_kwargs: object) -> None:
         return None
