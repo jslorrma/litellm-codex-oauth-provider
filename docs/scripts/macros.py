@@ -55,5 +55,4 @@ def define_env(env: MacrosPlugin) -> None:
             for path in sorted(module_path.rglob("*.py"))
             if "__init__.py" not in str(path) and "__main__.py" not in str(path)
         )
-        # print(f"Generated API reference for {module_path}, with {(list(rendered_lines))} items.")
         return "\n".join(rendered_lines)
