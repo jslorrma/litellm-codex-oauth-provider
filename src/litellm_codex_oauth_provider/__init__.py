@@ -87,7 +87,6 @@ Configuration
 Environment variables:
 - ``CODEX_AUTH_FILE``: Custom auth file path
 - ``CODEX_CACHE_DIR``: Custom cache directory
-- ``CODEX_MODE``: Enable/disable Codex-specific features
 - ``CODEX_DEBUG``: Enable debug logging
 
 Notes

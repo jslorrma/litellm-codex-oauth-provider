@@ -104,7 +104,18 @@ the request."""
 
 
 def _coerce_text(content: Any) -> str:
-    """Convert OpenAI content payloads to plain text for inspection."""
+    """Convert OpenAI content payloads to plain text for inspection.
+
+    Parameters
+    ----------
+    content : Any
+        Content payload which may be a string, mapping, iterable, or None.
+
+    Returns
+    -------
+    str
+        Concatenated text representation of the content.
+    """
     if content is None:
         return ""
     if isinstance(content, str):
@@ -118,18 +129,51 @@ def _coerce_text(content: Any) -> str:
 
 
 def _is_toolchain_system_prompt(content: str) -> bool:
-    """Identify legacy toolchain system prompts that should be filtered in Codex mode."""
+    """Identify legacy toolchain system prompts that should be filtered in Codex mode.
+
+    Parameters
+    ----------
+    content : str
+        System prompt content to inspect.
+
+    Returns
+    -------
+    bool
+        ``True`` when the prompt matches known legacy markers.
+    """
     lowered = content.lower()
     return any(marker in lowered for marker in LEGACY_TOOLCHAIN_MARKERS)
 
 
 def _strip_message_metadata(message: dict[str, Any]) -> dict[str, Any]:
-    """Remove identifiers that are not part of the Codex schema."""
+    """Remove identifiers that are not part of the Codex schema.
+
+    Parameters
+    ----------
+    message : dict[str, Any]
+        Message payload possibly containing metadata.
+
+    Returns
+    -------
+    dict[str, Any]
+        Cleaned message without Codex-incompatible metadata fields.
+    """
     return {key: value for key, value in message.items() if key not in {"id", "item_reference"}}
 
 
 def _drop_stray_function_output(message: dict[str, Any]) -> dict[str, Any]:
-    """Remove orphaned function_call_output payloads."""
+    """Remove orphaned function_call_output payloads.
+
+    Parameters
+    ----------
+    message : dict[str, Any]
+        Assistant message that may contain stray ``function_call_output`` fields.
+
+    Returns
+    -------
+    dict[str, Any]
+        Message with stray outputs removed when no matching function call exists.
+    """
     if (
         message.get("role") == "assistant"
         and "function_call_output" in message
@@ -142,13 +186,35 @@ def _drop_stray_function_output(message: dict[str, Any]) -> dict[str, Any]:
 
 
 def _clean_message_payload(message: dict[str, Any]) -> dict[str, Any]:
-    """Normalize message payload by removing Codex-incompatible metadata."""
+    """Normalize message payload by removing Codex-incompatible metadata.
+
+    Parameters
+    ----------
+    message : dict[str, Any]
+        Message payload to clean.
+
+    Returns
+    -------
+    dict[str, Any]
+        Cleaned message ready for Codex conversion.
+    """
     stripped = _strip_message_metadata(message)
     return _drop_stray_function_output(stripped)
 
 
 def _extract_tool_call(message: dict[str, Any]) -> dict[str, Any] | None:
-    """Extract the first tool call from a message."""
+    """Extract the first tool call from a message.
+
+    Parameters
+    ----------
+    message : dict[str, Any]
+        Message payload containing optional `tool_calls`.
+
+    Returns
+    -------
+    dict[str, Any] | None
+        Normalized function call payload or ``None`` when absent.
+    """
     tool_calls = message.get("tool_calls")
     if not tool_calls:
         return None
@@ -166,7 +232,18 @@ def _extract_tool_call(message: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _normalize_function_output(message: dict[str, Any]) -> dict[str, Any] | None:
-    """Convert tool role messages to Codex function_call_output schema."""
+    """Convert tool role messages to Codex function_call_output schema.
+
+    Parameters
+    ----------
+    message : dict[str, Any]
+        Tool role message from OpenAI chat history.
+
+    Returns
+    -------
+    dict[str, Any] | None
+        Codex function_call_output structure or ``None`` if not applicable.
+    """
     if message.get("role") != "tool":
         return None
     tool_call_id = message.get("tool_call_id")
@@ -181,7 +258,18 @@ def _normalize_function_output(message: dict[str, Any]) -> dict[str, Any] | None
 
 
 def _normalize_function_call(message: dict[str, Any]) -> dict[str, Any] | None:
-    """Normalize function call payloads into Codex schema."""
+    """Normalize function call payloads into Codex schema.
+
+    Parameters
+    ----------
+    message : dict[str, Any]
+        Assistant message containing function call information.
+
+    Returns
+    -------
+    dict[str, Any] | None
+        Codex-compatible function call payload or ``None`` when not present.
+    """
     tool_call = _extract_tool_call(message)
     if tool_call:
         return {

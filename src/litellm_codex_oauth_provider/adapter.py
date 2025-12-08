@@ -1,81 +1,60 @@
-r"""Pure adapters to reshape Codex responses into LiteLLM types.
+r"""Codex response adapters for LiteLLM interoperability.
 
-This module provides pure functions for transforming OpenAI API responses from the Codex
-backend into LiteLLM-compatible formats. It handles multiple response types including
-Server-Sent Events (SSE), JSON responses, and typed OpenAI models.
+This module converts Codex `/responses` payloads—whether delivered as Server-Sent Events
+(SSE) buffers or plain JSON bodies—into LiteLLM `ModelResponse` objects. Functions are
+intentionally side-effect free to keep sync and async call stacks simple and testable.
+Whenever possible, parsing relies on OpenAI's typed models for strict validation, while
+fallback paths preserve resilience against minor API drift or incomplete payloads.
 
-The adapter system supports:
-- Server-Sent Events (SSE) processing with buffered text handling
-- Multiple response format detection and parsing
-- OpenAI typed model validation with fallback mechanisms
-- Tool call extraction from various response formats
-- Usage statistics normalization across different token counting schemes
-- Streaming chunk generation for compatibility
-
-Response Processing Pipeline
-----------------------------
-1. **Format Detection**: Identify response type (SSE, JSON, or typed)
-2. **Parsing**: Extract JSON payload using appropriate method
-3. **Validation**: Validate using OpenAI typed models when possible
-4. **Transformation**: Convert to LiteLLM ModelResponse format
-5. **Tool Handling**: Extract and normalize tool calls
-6. **Usage Building**: Normalize token usage statistics
-
-Supported Response Formats
---------------------------
-- **SSE (Server-Sent Events)**: Streamed responses with event: data format
-- **JSON**: Direct JSON responses from the API
-- **Typed Models**: OpenAI Response model validation
-- **Legacy Formats**: Backward compatibility with older response structures
-
-Tool Call Handling
-------------------
-The adapter handles multiple tool call formats:
-- OpenAI format: `{"tool_calls": [{"function": {"name": "...", "arguments": "..."}}]}`
-- Codex format: `{"output": [{"type": "function_call", "name": "...", "arguments": "..."}]}`
-- Mixed formats: Combinations of the above with fallbacks
+Key capabilities
+----------------
+- Detect SSE buffers versus JSON responses and normalize them into a single payload
+- Validate payloads with OpenAI typed models and surface concise debug context on failure
+- Normalize tool calls from message-level or output-level formats
+- Build LiteLLM usage blocks from Codex token counters and inferred totals
+- Generate minimal streaming chunks to simulate streaming from completed responses
 
 Examples
 --------
-Basic response transformation:
+Parse a JSON response:
 
 >>> from litellm_codex_oauth_provider.adapter import transform_response
->>> openai_response = {"response": {"choices": [{"message": {"content": "Hello"}}]}}
->>> model_response = transform_response(openai_response, "gpt-5.1-codex")
->>> print(model_response.choices[0].message.content)
+>>> payload = {
+...     "id": "1",
+...     "choices": [
+...         {"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}
+...     ],
+... }
+>>> transform_response(payload, model="gpt-5.1-codex").choices[0].message.content
+'hi'
 
-SSE to JSON conversion:
+Convert buffered SSE to JSON:
 
 >>> from litellm_codex_oauth_provider.adapter import convert_sse_to_json
->>> sse_text = 'data: {"response": {"choices": [...]}}\\ndata: [DONE]'
->>> json_response = convert_sse_to_json(sse_text)
+>>> sse = 'data: {"type": "response.done", "response": {"id": "1", "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}}]}}\\n'
+>>> convert_sse_to_json(sse)["choices"][0]["message"]["content"]
+'hi'
 
-Response body parsing:
-
->>> from litellm_codex_oauth_provider.adapter import parse_response_body
->>> import httpx
->>> response = httpx.get("https://api.example.com")
->>> data = parse_response_body(response)
-
-Streaming chunk generation:
+Generate a streaming chunk from a completed response:
 
 >>> from litellm_codex_oauth_provider.adapter import build_streaming_chunk
+>>> model_response = transform_response(payload, model="gpt-5.1-codex")
 >>> chunk = build_streaming_chunk(model_response)
+>>> chunk.is_finished
+True
 
 Notes
 -----
-- All functions are pure (no side effects) for predictable behavior
-- SSE processing handles buffered text with proper event extraction
-- Typed model validation provides strict schema checking
-- Fallback mechanisms ensure robustness across API changes
-- Tool call extraction supports both OpenAI and Codex formats
-- Usage statistics normalize different token counting schemes
+- Logging is emitted at DEBUG level only to avoid noisy output.
+- All helpers are deterministic and reusable across sync/async provider paths.
+- Tool-call handling supports both modern and legacy Codex formats.
+- Usage aggregation tolerates missing totals by deriving them from known fields.
 
 See Also
 --------
-- `ModelResponse`: LiteLLM response model
-- `GenericStreamingChunk`: Streaming response chunk
-- `Usage`: Token usage statistics
+- `litellm.types.utils.GenericStreamingChunk`: Streaming response chunk used by LiteLLM
+- `litellm.ModelResponse`: Normalized response structure expected by LiteLLM
+- `openai.types.responses.Response`: Typed model used for validation
 """
 
 from __future__ import annotations
@@ -187,29 +166,16 @@ def parse_response_body(response: httpx.Response) -> dict[str, Any]:
 def convert_sse_to_json(payload: str) -> dict[str, Any]:
     r"""Convert buffered SSE text to final JSON payload.
 
-    This function processes Server-Sent Events (SSE) text data and extracts the final
-    JSON response payload. It handles the SSE format where events are separated by
-    "data:" lines and may contain completion markers like "[DONE]".
-
-    The conversion process:
-    1. Splits payload into individual lines for processing
-    2. Filters lines that don't start with "data:" prefix
-    3. Extracts JSON data from data lines, skipping empty or completion markers
-    4. Parses JSON events and validates they are Mapping types
-    5. Attempts typed model validation first using _extract_validated_response_from_events
-    6. Falls back to best-effort extraction using _extract_response_from_events
-    7. Returns the final validated response payload
-
     Parameters
     ----------
     payload : str
-        Buffered SSE text containing multiple data events, typically from
-        streaming API responses.
+        Concatenated SSE buffer containing `data:` lines.
 
     Returns
     -------
     dict[str, Any]
-        Final JSON response payload extracted from SSE events.
+        Parsed response payload extracted from SSE events. Empty dict if no usable event
+        is found.
 
     Raises
     ------
@@ -393,30 +359,20 @@ def build_streaming_chunk(response: ModelResponse) -> GenericStreamingChunk:
 
 
 def _extract_response_from_events(events: list[dict[str, Any]]) -> dict[str, Any]:
-    """Extract the final response payload from parsed SSE events using best-effort approach.
+    """Extract final response payload from parsed SSE events using best-effort approach.
 
-    This function implements a fallback extraction strategy for SSE events when typed
-    model validation fails or is not available. It searches through events in reverse
-    order to find the final response, looking for specific completion markers and
-    response payloads.
-
-    The extraction strategy:
-    1. Processes events in reverse order (newest first)
-    2. Looks for completion events with specific type markers
-    3. Extracts response or data payloads from completion events
-    4. Falls back to any event containing a response field
-    5. Returns the last valid event if no completion marker found
-    6. Returns empty dict if no valid events are found
+    Searches through events in reverse order for completion markers and response payloads.
+    Used as fallback when typed model validation fails.
 
     Parameters
     ----------
     events : list[dict[str, Any]]
-        List of parsed SSE events in dictionary format.
+        Parsed SSE events containing potential response payloads.
 
     Returns
     -------
     dict[str, Any]
-        The extracted response payload, or empty dict if no valid response found.
+        Extracted response payload or empty dict when none found.
     """
     for event in reversed(events):
         if event.get("type") in {"response.done", "response.completed"}:
@@ -434,30 +390,20 @@ def _extract_response_from_events(events: list[dict[str, Any]]) -> dict[str, Any
 
 
 def _extract_validated_response_from_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Validate SSE events using OpenAI typed models and return the first successful response.
+    """Validate SSE events using OpenAI typed models and return first successful response.
 
-    This function attempts to validate SSE events using OpenAI's typed models for strict
-    schema validation. It processes events in reverse order and returns the first
-    successfully validated response payload, providing detailed error logging for
-    debugging validation failures.
-
-    The validation process:
-    1. Processes events in reverse order (newest first for efficiency)
-    2. Attempts to validate each event as ResponseStreamEvent
-    3. Extracts response payload from validated stream events
-    4. Validates response payload using OpenAI Response model
-    5. Returns first successfully validated response
-    6. Logs validation errors for debugging when debug logging is enabled
+    Attempts to validate events using ResponseStreamEvent and Response models.
+    Processes events in reverse order and returns first validated response.
 
     Parameters
     ----------
     events : list[dict[str, Any]]
-        List of parsed SSE events to validate using typed models.
+        Parsed SSE events containing potential response payloads.
 
     Returns
     -------
     dict[str, Any] | None
-        First successfully validated response payload, or None if no events validate.
+        Validated response payload or ``None`` if validation fails.
     """
     validation_errors: list[str] = []
     validated_response: dict[str, Any] | None = None
@@ -495,27 +441,18 @@ def _extract_validated_response_from_events(events: list[dict[str, Any]]) -> dic
 def _build_usage(usage: Mapping[str, Any] | None) -> Usage:
     """Build normalized usage statistics from various token counting schemes.
 
-    This function normalizes usage statistics from different API response formats
-    into LiteLLM's standard Usage object. It handles multiple token field names
-    and calculates total tokens when not explicitly provided.
-
-    The normalization process:
-    1. Handles None input by creating zero usage
-    2. Extracts prompt tokens from multiple possible field names
-    3. Extracts completion tokens from multiple possible field names
-    4. Calculates total tokens if not explicitly provided
-    5. Converts all values to integers and creates Usage object
+    Normalizes usage data from different API formats into LiteLLM's Usage object.
+    Handles multiple token field names and calculates totals when not provided.
 
     Parameters
     ----------
     usage : Mapping[str, Any] | None
-        Usage data from API response, may contain various token field names
-        like 'prompt_tokens', 'input_tokens', 'completion_tokens', 'output_tokens', 'total_tokens'.
+        Usage payload from the API response.
 
     Returns
     -------
     Usage
-        Normalized usage statistics with prompt_tokens, completion_tokens, and total_tokens.
+        Normalized usage statistics with prompt, completion, and total tokens.
     """
     usage_data = usage or {}
     prompt_tokens = usage_data.get("prompt_tokens", usage_data.get("input_tokens", 0))
@@ -533,27 +470,18 @@ def _build_usage(usage: Mapping[str, Any] | None) -> Usage:
 def _coerce_output_fragment(fragment: Any) -> list[str]:
     """Extract text content from various output fragment formats.
 
-    This function handles different content formats within output fragments,
-    extracting text from strings, nested content arrays, or converting other
-    types to string representation. It recursively processes nested structures.
-
-    The extraction process:
-    1. Handles Mapping objects by checking for text and content fields
-    2. Extracts text from 'text' field if present
-    3. Processes 'content' field (string, list, or other types)
-    4. Recursively processes nested content arrays
-    5. Converts non-text content to string representation
-    6. Returns list of extracted text fragments
+    Handles different content formats, extracting text from strings, nested arrays,
+    or converting other types to string representation. Recursively processes structures.
 
     Parameters
     ----------
     fragment : Any
-        Content fragment that may be a string, mapping, list, or other type.
+        Output fragment to normalize.
 
     Returns
     -------
     list[str]
-        List of text fragments extracted from the content.
+        Extracted text parts from the fragment.
     """
     if isinstance(fragment, Mapping):
         texts: list[str] = []
@@ -578,26 +506,18 @@ def _coerce_output_fragment(fragment: Any) -> list[str]:
 def _extract_text_from_output(output: Any) -> str:
     """Extract and concatenate text content from output structures.
 
-    This function processes output data that may be in various formats (list, dict, etc.)
-    and extracts all text content, concatenating it into a single string with newlines
-    between fragments. It handles nested structures and filters out empty content.
-
-    The extraction process:
-    1. Normalizes output to a list format for consistent processing
-    2. Iterates through each fragment in the output
-    3. Extracts text from each fragment using _coerce_output_fragment
-    4. Concatenates all text fragments with newlines
-    5. Filters out empty strings and strips whitespace
+    Processes output data in various formats and extracts all text content,
+    concatenating into a single string with newlines between fragments.
 
     Parameters
     ----------
     output : Any
-        Output data that may be a list, dict, string, or other format containing text content.
+        Output payload from Codex response.
 
     Returns
     -------
     str
-        Concatenated text content from all fragments, with newlines between non-empty fragments.
+        Combined text representation.
     """
     fragments = output if isinstance(output, list) else [output]
     parts: list[str] = []
@@ -609,26 +529,18 @@ def _extract_text_from_output(output: Any) -> str:
 def _coerce_choices_from_output(output: Any) -> list[dict[str, Any]]:
     """Extract completion choices from output items in various formats.
 
-    This function processes output items to extract completion choices in the standard
-    OpenAI format. It handles different item types including messages and function calls,
-    converting them to the expected choice structure with proper content and finish reasons.
-
-    The extraction process:
-    1. Normalizes output to list format for consistent processing
-    2. Iterates through items looking for message and function_call types
-    3. For message items: extracts content and sets finish_reason based on status
-    4. For function_call items: creates tool_calls and sets tool_calls finish_reason
-    5. Returns first valid choice found, or creates fallback choice from text
+    Processes output items to extract completion choices in standard OpenAI format.
+    Handles message and function_call types, converting to choice structure.
 
     Parameters
     ----------
     output : Any
-        Output data containing items that may include messages or function calls.
+        Output payload that may include message or function_call entries.
 
     Returns
     -------
     list[dict[str, Any]]
-        List containing a single choice dict with message content and finish_reason.
+        Choices in OpenAI-compatible structure.
     """
     items = output if isinstance(output, list) else []
     for item in items:
@@ -680,37 +592,20 @@ def _collect_tool_calls(
 ) -> list[dict[str, Any]]:
     """Collect tool calls from message payload and response output with fallback handling.
 
-    This function implements a comprehensive tool call extraction strategy that checks
-    multiple locations in the response data. It first attempts to extract tool calls
-    from the message payload, then falls back to checking the response output items
-    for function call definitions.
-
-    The collection process:
-    1. First attempts extraction from message payload using _extract_tool_calls
-    2. If no tool calls found in message, checks response output items
-    3. Processes output items looking for function_call type items
-    4. Extracts function call details including name, arguments, and call ID
-    5. Normalizes arguments to JSON string format when needed
-    6. Returns combined list of all found tool calls
+    Extracts tool calls from message payload first, then falls back to response output.
+    Normalizes arguments to JSON string format and handles multiple tool call formats.
 
     Parameters
     ----------
     message_payload : Mapping[str, Any]
-        Message payload that may contain tool_calls field.
+        Assistant message containing potential tool_calls field.
     response_payload : Mapping[str, Any]
-        Response payload that may contain output items with function calls.
+        Full response payload containing output items when tool_calls absent.
 
     Returns
     -------
     list[dict[str, Any]]
-        List of normalized tool call dictionaries with id, type, function name, and arguments.
-
-    Notes
-    -----
-    - Prioritizes message payload tool calls over output items
-    - Handles multiple tool call formats and argument types
-    - Generates fallback call IDs when not provided
-    - Normalizes arguments to JSON string format for consistency
+        Normalized tool calls ready for LiteLLM.
     """
     tool_calls = _extract_tool_calls(message_payload)
     if tool_calls:
@@ -739,36 +634,18 @@ def _collect_tool_calls(
 def _extract_tool_calls(message_payload: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Extract and normalize tool calls from message payload.
 
-    This function processes the tool_calls field in message payloads and normalizes
-    them into a consistent format. It handles various tool call structures and
-    argument types, ensuring compatibility with LiteLLM's expected format.
-
-    The extraction process:
-    1. Retrieves tool_calls payload from message or returns empty list
-    2. Validates that payload is a list type
-    3. Iterates through each tool call in the payload
-    4. Extracts function details from nested function payload or direct fields
-    5. Normalizes arguments to JSON string format when needed
-    6. Generates fallback IDs when not provided
-    7. Returns list of normalized tool call dictionaries
+    Processes tool_calls field and normalizes them into consistent format.
+    Handles various tool call structures and argument types for LiteLLM compatibility.
 
     Parameters
     ----------
     message_payload : Mapping[str, Any]
-        Message payload that may contain tool_calls field.
+        Assistant message with optional `tool_calls` field.
 
     Returns
     -------
     list[dict[str, Any]]
-        List of normalized tool call dictionaries with id, type, function name, and arguments.
-
-    Notes
-    -----
-    - Handles both OpenAI and Codex tool call formats
-    - Normalizes arguments to JSON string format for consistency
-    - Generates sequential IDs when call_id not provided
-    - Validates payload structure and skips invalid entries
-    - Supports nested function payload extraction
+        Normalized tool call entries.
     """
     tool_calls_payload = message_payload.get("tool_calls") or []
     if not isinstance(tool_calls_payload, list):
@@ -809,38 +686,22 @@ def _resolve_message_content(
 ) -> tuple[str | None, str]:
     """Resolve message content and role with fallback handling.
 
-    This function determines the final message content and role by checking multiple
-    sources and applying appropriate fallback logic. It handles cases where content
-    may be in different locations or formats depending on the response structure.
-
-    The resolution process:
-    1. Retrieves initial content from message payload
-    2. If tool calls exist and content is empty, sets content to None
-    3. If no tool calls and content is empty, attempts fallback from response output
-    4. Extracts text from output fallback using _extract_text_from_output
-    5. Determines message role with assistant as default
-    6. Returns tuple of resolved content and role
+    Determines final message content and role by checking multiple sources.
+    Tool calls take precedence over content; falls back to response output when needed.
 
     Parameters
     ----------
     message_payload : Mapping[str, Any]
-        Message payload containing content and role fields.
+        Assistant message payload.
     response_payload : Mapping[str, Any]
-        Response payload that may contain output fallback content.
+        Full response payload containing potential output text.
     tool_calls : list[dict[str, Any]]
-        List of tool calls that may affect content resolution logic.
+        Extracted tool calls influencing content selection.
 
     Returns
     -------
     tuple[str | None, str]
-        Tuple containing resolved message content (may be None) and role string.
-
-    Notes
-    -----
-    - Tool calls take precedence over content when both are present
-    - Output fallback only used when no tool calls and content is empty
-    - Role defaults to "assistant" when not specified
-    - Content may be None when tool calls are present without text
+        Tuple of (content, role) for the assistant message.
     """
     message_content = message_payload.get("content")
     if tool_calls and (message_content is None or message_content == ""):
@@ -856,33 +717,18 @@ def _resolve_message_content(
 def _coerce_function_call(message_payload: Mapping[str, Any]) -> dict[str, Any] | None:
     """Extract and normalize function call from message payload.
 
-    This function processes the function_call field in message payloads and normalizes
-    it into a consistent format for compatibility with LiteLLM's expected structure.
-    It handles various function call formats and argument types.
-
-    The coercion process:
-    1. Retrieves function_call field from message payload
-    2. Validates that function_call is a Mapping type
-    3. Extracts function name and arguments from the function_call
-    4. Normalizes arguments to JSON string format when needed
-    5. Returns normalized function call dictionary or None if invalid
+    Processes function_call field and normalizes it for LiteLLM compatibility.
+    Handles various function call formats and argument types.
 
     Parameters
     ----------
     message_payload : Mapping[str, Any]
-        Message payload that may contain function_call field.
+        Assistant message payload that may include `function_call`.
 
     Returns
     -------
     dict[str, Any] | None
-        Normalized function call dictionary with name and arguments, or None if invalid.
-
-    Notes
-    -----
-    - Returns None for non-Mapping function_call types
-    - Normalizes arguments to JSON string format for consistency
-    - Handles both dict and list argument types
-    - Maintains backward compatibility with legacy function call formats
+        Normalized function call payload or ``None`` when absent.
     """
     function_call = message_payload.get("function_call")
     if not isinstance(function_call, Mapping):
@@ -899,35 +745,20 @@ def _resolve_finish_reason(
 ) -> str | None:
     """Resolve finish reason with tool call fallback logic.
 
-    This function determines the appropriate finish reason for a response by checking
-    the primary choice's finish reason and applying fallback logic when tool calls
-    are present. It ensures consistent finish reason reporting across different
-    response formats.
-
-    The resolution process:
-    1. Retrieves finish_reason from primary choice
-    2. If tool calls exist and no finish reason is set, returns "tool_calls"
-    3. Otherwise returns the original finish reason (may be None)
-    4. Ensures tool calls are properly reflected in finish reason
+    Determines appropriate finish reason by checking primary choice and applying
+    fallback logic when tool calls are present. Ensures consistent reporting.
 
     Parameters
     ----------
     primary_choice : Mapping[str, Any]
-        Primary choice object that may contain finish_reason field.
+        Primary completion choice from the response.
     tool_calls : list[dict[str, Any]]
-        List of tool calls that may require tool_calls finish reason.
+        Tool calls found in the message or output.
 
     Returns
     -------
     str | None
-        Resolved finish reason string or None if not applicable.
-
-    Notes
-    -----
-    - Tool calls take precedence when no explicit finish reason provided
-    - Maintains original finish reason when tool calls are not present
-    - Ensures consistent "tool_calls" finish reason for function calling
-    - Supports various finish reason formats from different APIs
+        Finish reason string or ``None`` when not provided.
     """
     finish_reason = primary_choice.get("finish_reason")
     if tool_calls and not finish_reason:

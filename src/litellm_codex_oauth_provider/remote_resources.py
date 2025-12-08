@@ -1,4 +1,74 @@
-"""Remote resource loading for Codex instructions."""
+r"""Remote resource loading for Codex instructions.
+
+This module handles fetching, caching, and managing Codex instructions from remote
+sources, primarily GitHub releases. It provides intelligent caching with ETag support
+and fallback mechanisms for offline operation.
+
+The remote resources system supports:
+- GitHub release-based instruction fetching
+- Intelligent caching with TTL and ETag validation
+- Model family-specific instruction files
+- Offline fallback to cached instructions
+- Cache metadata management and validation
+
+Resource Management Pipeline
+----------------------------
+1. **Cache Check**: Validate existing cache freshness
+2. **Release Discovery**: Fetch latest GitHub release information
+3. **File Download**: Download model-specific instruction files
+4. **Cache Update**: Store instructions and metadata
+5. **Fallback Handling**: Use cached data when network fails
+
+Supported Instruction Files
+----------------------------
+- **codex-max**: `gpt-5.1-codex-max_prompt.md` → `codex-max-instructions.md`
+- **codex**: `gpt_5_codex_prompt.md` → `codex-instructions.md`
+- **gpt-5.1**: `gpt_5_1_prompt.md` → `gpt-5.1-instructions.md`
+
+Cache Strategy
+--------------
+- **TTL**: 15 minutes cache lifetime
+- **ETag**: HTTP ETag validation for efficiency
+- **Metadata**: JSON metadata file with cache information
+- **Fallback**: Graceful degradation to cached data
+- **Atomic**: Atomic write operations for cache consistency
+
+Examples
+--------
+Basic instruction fetching:
+
+>>> from litellm_codex_oauth_provider.remote_resources import fetch_codex_instructions
+>>> instructions = fetch_codex_instructions("gpt-5.1-codex-max")
+>>> print(instructions[:100])
+'# GPT-5.1 Codex Max Instructions\\n\\nYou are a helpful AI coding assistant...'
+
+Cache path management:
+
+>>> from litellm_codex_oauth_provider.remote_resources import _cache_paths
+>>> paths = _cache_paths("codex")
+>>> print(f"Instructions: {paths.instructions}")
+>>> print(f"Metadata: {paths.metadata}")
+
+Cache metadata handling:
+
+>>> from litellm_codex_oauth_provider.remote_resources import _load_cache_metadata
+>>> metadata = _load_cache_metadata(paths)
+>>> print(f"ETag: {metadata.etag}")
+>>> print(f"Last checked: {metadata.last_checked}")
+
+Notes
+-----
+- Instructions are fetched from OpenAI's official Codex repository
+- Cache directory defaults to `~/.opencode/cache`
+- Network timeouts are set to 20 seconds for GitHub API calls
+- Cache validation uses both TTL and ETag for efficiency
+- Fallback to default instructions when all else fails
+
+See Also
+--------
+- `prompts`: Instruction usage in message derivation
+- `constants`: Cache directory and TTL configuration
+"""
 
 from __future__ import annotations
 
@@ -47,6 +117,18 @@ class CachePaths:
 
 
 def _cache_paths(model_family: str) -> CachePaths:
+    """Return cache file paths for the given model family.
+
+    Parameters
+    ----------
+    model_family : str
+        Model family identifier (e.g., ``codex``, ``codex-max``, ``gpt-5.1``).
+
+    Returns
+    -------
+    CachePaths
+        Paths for instruction and metadata files.
+    """
     cache_dir = constants.CODEX_CACHE_DIR
     instructions_file = cache_dir / CACHE_FILES[model_family]
     meta_suffix = constants.CODEX_CACHE_META_SUFFIX
@@ -55,6 +137,7 @@ def _cache_paths(model_family: str) -> CachePaths:
 
 
 def _load_cache_metadata(paths: CachePaths) -> CacheMetadata:
+    """Load cache metadata from disk, returning defaults on failure."""
     if not paths.metadata.exists():
         return CacheMetadata(etag=None, tag=None, last_checked=None, url=None)
     try:
@@ -70,6 +153,7 @@ def _load_cache_metadata(paths: CachePaths) -> CacheMetadata:
 
 
 def _load_cached_instructions(paths: CachePaths) -> str | None:
+    """Return cached instruction contents if available."""
     try:
         return paths.instructions.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -83,6 +167,7 @@ def _write_cache(
     metadata: CacheMetadata,
     now: float,
 ) -> None:
+    """Persist instructions and metadata to disk atomically."""
     last_checked = metadata.last_checked if metadata.last_checked is not None else now
     paths.instructions.parent.mkdir(parents=True, exist_ok=True)
     paths.instructions.write_text(instructions, encoding="utf-8")
@@ -100,6 +185,7 @@ def _write_cache(
 
 
 def _should_use_cache(metadata: CacheMetadata, cached: str | None, now: float) -> bool:
+    """Determine whether cached instructions remain valid based on TTL."""
     if metadata.last_checked is None or cached is None:
         return False
     return now - float(metadata.last_checked) < constants.CODEX_INSTRUCTIONS_CACHE_TTL_SECONDS
@@ -117,7 +203,62 @@ def _latest_release_tag(client: httpx.Client) -> str:
 
 
 def fetch_codex_instructions(normalized_model: str = "gpt-5.1-codex") -> str:
-    """Fetch Codex instructions from the latest release with ETag-based caching."""
+    r"""Fetch Codex instructions from the latest release with ETag-based caching.
+
+    This function retrieves model-specific instructions from OpenAI's official Codex
+    repository, with intelligent caching to minimize network requests. It supports
+    multiple model families and provides fallback mechanisms for offline operation.
+
+    The fetching process:
+    1. Determines the appropriate model family for the given model
+    2. Checks cache validity using TTL and ETag validation
+    3. Fetches latest GitHub release information
+    4. Downloads model-specific instruction files
+    5. Updates cache with new instructions and metadata
+    6. Falls back to cached data if network fails
+
+    Parameters
+    ----------
+    normalized_model : str, default "gpt-5.1-codex"
+        The normalized model identifier to fetch instructions for.
+        Supported models: "gpt-5.1-codex", "gpt-5.1-codex-max", "gpt-5.1-codex-mini", "gpt-5.1"
+
+    Returns
+    -------
+    str
+        The instruction text for the specified model. If fetching fails,
+        returns cached instructions or default instructions as fallback.
+
+    Examples
+    --------
+    Basic instruction fetching:
+
+    >>> from litellm_codex_oauth_provider.remote_resources import fetch_codex_instructions
+    >>> instructions = fetch_codex_instructions("gpt-5.1-codex-max")
+    >>> print(instructions[:100])
+    '# GPT-5.1 Codex Max Instructions\\n\\nYou are a helpful AI coding assistant...'
+
+    Different model families:
+
+    >>> codex_instructions = fetch_codex_instructions("gpt-5.1-codex")
+    >>> mini_instructions = fetch_codex_instructions("gpt-5.1-codex-mini")
+    >>> max_instructions = fetch_codex_instructions("gpt-5.1-codex-max")
+
+    Notes
+    -----
+    - Instructions are fetched from OpenAI's official Codex repository
+    - Cache TTL is 15 minutes to balance freshness and performance
+    - ETag validation minimizes unnecessary downloads
+    - Network timeouts are set to 20 seconds for reliability
+    - Fallback to cached/default instructions ensures robustness
+    - Cache directory defaults to ~/.opencode/cache
+
+    See Also
+    --------
+    - `get_model_family`: Model family classification
+    - `_cache_paths`: Cache file path management
+    - `_should_use_cache`: Cache validation logic
+    """
     model_family = get_model_family(normalized_model)
     prompt_file = PROMPT_FILES.get(model_family, PROMPT_FILES["codex"])
     paths = _cache_paths(model_family)

@@ -1,7 +1,49 @@
-"""Codex OAuth Authentication Provider for LiteLLM.
+"""LiteLLM provider that routes completions through Codex OAuth.
 
-This module implements a custom LiteLLM provider that uses Codex CLI's OAuth
-authentication to access ChatGPT Plus models through OpenAI API.
+This module implements the production-ready `CodexAuthProvider`, a CustomLLM provider
+that speaks the OpenAI `/responses` API while authenticating with Codex CLI OAuth
+tokens. It centralizes model normalization, prompt preparation, token refresh, request
+dispatch, and response adaptation so callers can treat Codex-backed models as if they
+were first-class LiteLLM providers.
+
+Architecture overview
+---------------------
+1. **Authentication**: Access tokens and account IDs are read from the Codex auth file
+   and refreshed automatically when they near expiry. Tokens are cached in-memory with
+   configurable buffer windows.
+2. **Request preparation**: Messages are converted into Codex-ready input, optional tool
+   bridge prompts are injected, and instructions are derived from user/system messages.
+   Reasoning and verbosity flags are normalized to Codex parameters.
+3. **Dispatch**: Payloads are sent via the OpenAI Python client with Codex-specific
+   headers. If streaming through the client fails, an httpx fallback posts directly to
+   `/responses`. Requests are logged at DEBUG with sensitive fields sanitized.
+4. **Response adaptation**: OpenAI-typed models validate payloads when possible, then
+   responses are normalized into LiteLLM `ModelResponse` instances for both sync and
+   async callers. A small helper produces synthetic streaming chunks for LiteLLM's
+   streaming interface.
+
+Usage example
+-------------
+>>> from litellm_codex_oauth_provider import provider
+>>> llm = provider.CodexAuthProvider()
+>>> result = llm.completion(
+...     model="codex/gpt-5.1-codex",
+...     messages=[{"role": "user", "content": "Hello"}],
+... )
+>>> print(result.choices[0].message.content)
+
+Notes
+-----
+- Codex mode is always enabled; no additional flags are required.
+- The provider is thread-safe and caches tokens per instance.
+- Unsupported OpenAI parameters are filtered to avoid 400 responses from Codex.
+- Debug logging is opt-in via the `CODEX_DEBUG` environment variable.
+
+See Also
+--------
+- `adapter`: Response parsing and normalization helpers
+- `openai_client`: Codex-aware OpenAI client wrappers
+- `auth`: Token reading and refresh utilities
 """
 
 from __future__ import annotations
@@ -20,7 +62,7 @@ from . import constants
 from .adapter import build_streaming_chunk, parse_response_body, transform_response
 from .auth import _decode_account_id, _refresh_token, get_auth_context
 from .exceptions import CodexAuthTokenExpiredError
-from .model_map import normalize_model, strip_provider_prefix
+from .model_map import _strip_provider_prefix, normalize_model
 from .openai_client import AsyncCodexOpenAIClient, CodexOpenAIClient
 from .prompts import DEFAULT_INSTRUCTIONS, build_tool_bridge_message, derive_instructions
 from .reasoning import apply_reasoning_config
@@ -175,6 +217,20 @@ class CodexAuthProvider(CustomLLM):
         return self._account_id
 
     def _resolve_account_id(self) -> str | None:
+        """Resolve the ChatGPT account ID from cached state or JWT claims.
+
+        Returns
+        -------
+        str | None
+            The account identifier if available, otherwise ``None``. Cached values are
+            preferred to avoid redundant JWT decoding work.
+
+        Notes
+        -----
+        - Falls back to decoding the cached bearer token when account ID has not been
+          resolved yet.
+        - Returns ``None`` if no token is cached or decoding fails silently upstream.
+        """
         if self._account_id:
             return self._account_id
         if self._cached_token:
@@ -182,6 +238,20 @@ class CodexAuthProvider(CustomLLM):
         return None
 
     def _resolve_base_url(self, api_base: str | None) -> str:
+        """Normalize the Codex base URL, ensuring the `/codex` prefix is present.
+
+        Parameters
+        ----------
+        api_base : str | None
+            Optional override provided by LiteLLM caller. When ``None`` the default
+            Codex API base is used.
+
+        Returns
+        -------
+        str
+            Sanitized base URL without duplicated `/responses` suffix and with a
+            trailing `/codex` segment guaranteed.
+        """
         base = (api_base or constants.CODEX_API_BASE_URL).rstrip("/")
         if base.endswith(constants.CODEX_RESPONSES_ENDPOINT):
             base = base[: -len(constants.CODEX_RESPONSES_ENDPOINT)]
@@ -192,12 +262,30 @@ class CodexAuthProvider(CustomLLM):
         return base
 
     def _maybe_enable_debug_logging(self) -> None:
+        """Enable debug logging when `CODEX_DEBUG` is set."""
         if os.getenv("CODEX_DEBUG", "").lower() in {"1", "true", "yes", "on", "debug"}:
             logging.basicConfig(level=logging.DEBUG)
             logger.debug("CODEX_DEBUG enabled; debug logging active.")
 
     def get_bearer_token(self) -> str:
-        """Get bearer token with caching and refresh handling."""
+        """Return a valid Codex bearer token, refreshing if necessary.
+
+        Returns
+        -------
+        str
+            Active bearer token for Codex API calls.
+
+        Raises
+        ------
+        CodexAuthTokenExpiredError
+            If the cached token is expired and refresh fails.
+
+        Notes
+        -----
+        - Tokens are cached in-memory with a buffer window to avoid expiry mid-request.
+        - On expiry, a refresh attempt is performed before propagating the original
+          `CodexAuthTokenExpiredError`.
+        """
         if (
             self._cached_token
             and self._token_expiry
@@ -233,6 +321,35 @@ class CodexAuthProvider(CustomLLM):
         reasoning_config: dict[str, Any],
         **kwargs: Any,
     ) -> dict[str, Any]:
+        """Construct the Codex `/responses` payload.
+
+        Parameters
+        ----------
+        model : str
+            Normalized Codex model identifier.
+        instructions : str
+            Instruction string derived from system/user prompts.
+        messages : list[dict[str, Any]]
+            Chat messages prepared for Codex, optionally prefixed with the tool bridge
+            prompt.
+        prompt_cache_key : str | None
+            Optional cache key to reuse prompt context server-side.
+        reasoning_config : dict[str, Any]
+            Reasoning and verbosity options normalized for Codex.
+        **kwargs : Any
+            Additional completion parameters forwarded from LiteLLM.
+
+        Returns
+        -------
+        dict[str, Any]
+            Fully prepared payload ready for dispatch to `/responses`.
+
+        Notes
+        -----
+        - Unsupported options are filtered later by `_filter_payload_options`.
+        - Tool definitions are normalized to match OpenAI tool schema expectations.
+        - Prompt cache keys are included in both payload and headers when provided.
+        """
         optional_params = kwargs.pop("optional_params", {}) or {}
         normalized_tools = self._normalize_tools(
             kwargs.pop("tools", None) or optional_params.pop("tools", None)
@@ -259,6 +376,19 @@ class CodexAuthProvider(CustomLLM):
         return payload
 
     def _build_extra_headers(self, prompt_cache_key: str | None) -> dict[str, str]:
+        """Build Codex-specific headers for `/responses` requests.
+
+        Parameters
+        ----------
+        prompt_cache_key : str | None
+            Optional cache key used to propagate session identifiers for prompt caching.
+
+        Returns
+        -------
+        dict[str, str]
+            Headers including beta flags, originator, account ID, and optional session
+            identifiers.
+        """
         headers: dict[str, str] = {
             "accept": "text/event-stream",
             "Content-Type": "application/json",
@@ -276,13 +406,28 @@ class CodexAuthProvider(CustomLLM):
     def _prepare_input(
         self, *, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None
     ) -> list[dict[str, Any]]:
-        """Return Codex-ready input, optionally prepending the bridge prompt when tools are used."""
+        """Return Codex-ready input, optionally prepending the bridge prompt when tools are used.
+
+        Parameters
+        ----------
+        messages : list[dict[str, Any]]
+            Chat messages provided by the caller.
+        tools : list[dict[str, Any]] | None
+            Normalized tool definitions. When present, a tool bridge system message is
+            injected to align Codex tool calling with OpenAI semantics.
+
+        Returns
+        -------
+        list[dict[str, Any]]
+            Input message list ready for inclusion in the `/responses` payload.
+        """
         input_messages = list(messages)
         if tools:
             input_messages = [build_tool_bridge_message(), *input_messages]
         return input_messages
 
     def _get_sync_client(self, base_url: str) -> CodexOpenAIClient:
+        """Return a CodexOpenAIClient targeting the requested base URL."""
         if base_url == self.base_url:
             return self._client
         return CodexOpenAIClient(
@@ -292,6 +437,7 @@ class CodexAuthProvider(CustomLLM):
         )
 
     def _get_async_client(self, base_url: str) -> AsyncCodexOpenAIClient:
+        """Return an AsyncCodexOpenAIClient targeting the requested base URL."""
         if base_url == self.base_url:
             return self._async_client
         return AsyncCodexOpenAIClient(
@@ -302,7 +448,23 @@ class CodexAuthProvider(CustomLLM):
 
     @staticmethod
     def _filter_payload_options(options: Mapping[str, Any]) -> dict[str, Any]:
-        """Allow only Response API-supported parameters, remapping when needed."""
+        """Allow only Response API-supported parameters, remapping when needed.
+
+        Parameters
+        ----------
+        options : Mapping[str, Any]
+            Raw keyword arguments provided to the completion call.
+
+        Returns
+        -------
+        dict[str, Any]
+            Filtered parameters safe to send to the Codex `/responses` endpoint.
+
+        Notes
+        -----
+        Unsupported OpenAI parameters are intentionally dropped to avoid 400 responses.
+        A DEBUG log entry lists any dropped keys for troubleshooting.
+        """
         passthrough_keys = {
             "metadata",
             "parallel_tool_calls",
@@ -343,6 +505,23 @@ class CodexAuthProvider(CustomLLM):
 
     @staticmethod
     def _normalize_tools(tools: Any) -> list[dict[str, Any]] | None:
+        """Normalize tool definitions to OpenAI-compliant schema.
+
+        Parameters
+        ----------
+        tools : Any
+            Raw tool definitions supplied to LiteLLM.
+
+        Returns
+        -------
+        list[dict[str, Any]] | None
+            Normalized tool list or ``None`` when no tools are provided.
+
+        Raises
+        ------
+        ValueError
+            If tool definitions are not provided as a list or required names are missing.
+        """
         if tools is None:
             return None
         if not isinstance(tools, list):
@@ -501,7 +680,7 @@ class CodexAuthProvider(CustomLLM):
         base_url = self._resolve_base_url(api_base)
         self.get_bearer_token()
 
-        normalized_model = normalize_model(strip_provider_prefix(model))
+        normalized_model = normalize_model(_strip_provider_prefix(model))
         instructions_text = fetch_codex_instructions(normalized_model)
         instructions, input_messages = derive_instructions(
             messages,
@@ -509,7 +688,7 @@ class CodexAuthProvider(CustomLLM):
             instructions_text=instructions_text,
         )
         reasoning_config = apply_reasoning_config(
-            original_model=strip_provider_prefix(model),
+            original_model=_strip_provider_prefix(model),
             normalized_model=normalized_model,
             reasoning_effort=kwargs.get("reasoning_effort"),
             verbosity=kwargs.get("verbosity"),
@@ -532,13 +711,35 @@ class CodexAuthProvider(CustomLLM):
     async def acompletion(
         self, model: str, messages: list[dict[str, Any]], api_base: str | None = None, **kwargs: Any
     ) -> ModelResponse:
-        """Async completion for LiteLLM usage."""
+        """Async completion for LiteLLM usage.
+
+        Parameters
+        ----------
+        model : str
+            Requested model identifier (provider prefix optional).
+        messages : list[dict[str, Any]]
+            Chat history in OpenAI format.
+        api_base : str | None, optional
+            Optional Codex base URL override.
+        **kwargs : Any
+            Additional completion parameters mirrored from `completion`.
+
+        Returns
+        -------
+        ModelResponse
+            Parsed and normalized completion result.
+
+        Notes
+        -----
+        Follows the same preparation and dispatch pipeline as `completion` but uses the
+        asynchronous OpenAI client and httpx transport.
+        """
         kwargs = dict(kwargs)
         prompt_cache_key = kwargs.pop("prompt_cache_key", None)
         base_url = self._resolve_base_url(api_base)
         self.get_bearer_token()
 
-        normalized_model = normalize_model(strip_provider_prefix(model))
+        normalized_model = normalize_model(_strip_provider_prefix(model))
         instructions_text = fetch_codex_instructions(normalized_model)
         instructions, input_messages = derive_instructions(
             messages,
@@ -546,7 +747,7 @@ class CodexAuthProvider(CustomLLM):
             instructions_text=instructions_text,
         )
         reasoning_config = apply_reasoning_config(
-            original_model=strip_provider_prefix(model),
+            original_model=_strip_provider_prefix(model),
             normalized_model=normalized_model,
             reasoning_effort=kwargs.get("reasoning_effort"),
             verbosity=kwargs.get("verbosity"),
@@ -575,7 +776,26 @@ class CodexAuthProvider(CustomLLM):
         custom_llm_provider: str | None = None,
         **kwargs: Any,
     ) -> CustomStreamWrapper:
-        """Simulate streaming by emitting a single generic streaming chunk."""
+        """Simulate streaming by emitting a single generic streaming chunk.
+
+        Parameters
+        ----------
+        model : str
+            Requested model identifier.
+        messages : list[dict[str, Any]]
+            Chat messages in OpenAI format.
+        api_base : str | None, optional
+            Codex base URL override.
+        custom_llm_provider : str | None, optional
+            LiteLLM provider identifier (ignored but preserved for signature parity).
+        **kwargs : Any
+            Additional completion parameters forwarded to `completion`.
+
+        Returns
+        -------
+        CustomStreamWrapper
+            Iterable producing a single streaming chunk compatible with LiteLLM.
+        """
         completion_response = self.completion(
             model=model,
             messages=messages,
@@ -601,7 +821,26 @@ class CodexAuthProvider(CustomLLM):
         custom_llm_provider: str | None = None,
         **kwargs: Any,
     ) -> CustomStreamWrapper:
-        """Simulate async streaming by emitting a single generic streaming chunk."""
+        """Simulate async streaming by emitting a single generic streaming chunk.
+
+        Parameters
+        ----------
+        model : str
+            Requested model identifier.
+        messages : list[dict[str, Any]]
+            Chat messages in OpenAI format.
+        api_base : str | None, optional
+            Codex base URL override.
+        custom_llm_provider : str | None, optional
+            LiteLLM provider identifier (ignored but preserved for signature parity).
+        **kwargs : Any
+            Additional completion parameters forwarded to `acompletion`.
+
+        Returns
+        -------
+        CustomStreamWrapper
+            Async iterable producing a single streaming chunk compatible with LiteLLM.
+        """
         completion_response = await self.acompletion(
             model=model,
             messages=messages,
@@ -625,6 +864,22 @@ class CodexAuthProvider(CustomLLM):
     def _dispatch_response_request(
         self, *, payload: dict[str, Any], extra_headers: dict[str, str], base_url: str
     ) -> dict[str, Any]:
+        """Dispatch a `/responses` request synchronously via httpx fallback.
+
+        Parameters
+        ----------
+        payload : dict[str, Any]
+            Prepared request body.
+        extra_headers : dict[str, str]
+            Headers including beta flags and optional session identifiers.
+        base_url : str
+            Target Codex base URL.
+
+        Returns
+        -------
+        dict[str, Any]
+            Parsed JSON response body.
+        """
         client = self._get_sync_client(base_url)
         self._log_request_debug(base_url, payload, extra_headers)
         return self._dispatch_via_httpx(client=client, payload=payload, extra_headers=extra_headers)
@@ -632,6 +887,22 @@ class CodexAuthProvider(CustomLLM):
     async def _dispatch_response_request_async(
         self, *, payload: dict[str, Any], extra_headers: dict[str, str], base_url: str
     ) -> dict[str, Any]:
+        """Dispatch a `/responses` request asynchronously via httpx fallback.
+
+        Parameters
+        ----------
+        payload : dict[str, Any]
+            Prepared request body.
+        extra_headers : dict[str, str]
+            Headers including beta flags and optional session identifiers.
+        base_url : str
+            Target Codex base URL.
+
+        Returns
+        -------
+        dict[str, Any]
+            Parsed JSON response body.
+        """
         client = self._get_async_client(base_url)
         self._log_request_debug(base_url, payload, extra_headers)
         return await self._dispatch_via_httpx_async(
@@ -641,6 +912,17 @@ class CodexAuthProvider(CustomLLM):
     def _log_request_debug(
         self, base_url: str, payload: Mapping[str, Any], extra_headers: Mapping[str, str]
     ) -> None:
+        """Emit sanitized DEBUG logging for outbound requests.
+
+        Parameters
+        ----------
+        base_url : str
+            Target Codex base URL.
+        payload : Mapping[str, Any]
+            Prepared request payload.
+        extra_headers : Mapping[str, str]
+            Headers to be sent with the request.
+        """
         if not logger.isEnabledFor(logging.DEBUG):
             return
         sanitized_headers = {
@@ -674,6 +956,27 @@ class CodexAuthProvider(CustomLLM):
         payload: Mapping[str, Any],
         extra_headers: Mapping[str, str],
     ) -> dict[str, Any]:
+        """Send the request via httpx using the synchronous client.
+
+        Parameters
+        ----------
+        client : CodexOpenAIClient
+            Prepared sync OpenAI client.
+        payload : Mapping[str, Any]
+            Request payload.
+        extra_headers : Mapping[str, str]
+            Additional headers to merge into the request.
+
+        Returns
+        -------
+        dict[str, Any]
+            Parsed JSON response from Codex.
+
+        Raises
+        ------
+        httpx.HTTPStatusError
+            If the Codex API returns a non-success status code.
+        """
         payload_with_stream = dict(payload)
         payload_with_stream.setdefault("stream", True)
         headers = {
@@ -727,6 +1030,27 @@ class CodexAuthProvider(CustomLLM):
         payload: Mapping[str, Any],
         extra_headers: Mapping[str, str],
     ) -> dict[str, Any]:
+        """Send the request via httpx using the asynchronous client.
+
+        Parameters
+        ----------
+        client : AsyncCodexOpenAIClient
+            Prepared async OpenAI client.
+        payload : Mapping[str, Any]
+            Request payload.
+        extra_headers : Mapping[str, str]
+            Additional headers to merge into the request.
+
+        Returns
+        -------
+        dict[str, Any]
+            Parsed JSON response from Codex.
+
+        Raises
+        ------
+        httpx.HTTPStatusError
+            If the Codex API returns a non-success status code.
+        """
         payload_with_stream = dict(payload)
         payload_with_stream.setdefault("stream", True)
         headers = {
@@ -745,6 +1069,19 @@ class CodexAuthProvider(CustomLLM):
         return parse_response_body(response)
 
     def _format_http_error(self, response: httpx.Response) -> str:
+        """Render a descriptive error message from an httpx response.
+
+        Parameters
+        ----------
+        response : httpx.Response
+            Response received from the Codex API.
+
+        Returns
+        -------
+        str
+            Human-readable error summary including status, detail message, and
+            rate-limit hints when available.
+        """
         detail = ""
         try:
             detail_json = response.json()
