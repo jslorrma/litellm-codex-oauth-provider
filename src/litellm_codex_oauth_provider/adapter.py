@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
@@ -13,6 +14,9 @@ from openai.types.responses import Response, ResponseStreamEvent
 
 if TYPE_CHECKING:
     import httpx
+
+
+logger = logging.getLogger(__name__)
 
 
 def parse_response_body(response: httpx.Response) -> dict[str, Any]:
@@ -28,8 +32,19 @@ def parse_response_body(response: httpx.Response) -> dict[str, Any]:
         return Response.model_validate_json(response.content).model_dump()
     except json.JSONDecodeError as exc:
         raise RuntimeError("Codex API returned invalid JSON") from exc
-    except Exception:
-        return response.json()
+    except Exception as exc:
+        logger.debug(
+            "OpenAI typed response validation failed; falling back to raw JSON",
+            extra={
+                "status_code": response.status_code,
+                "headers": dict(response.headers),
+                "error": str(exc),
+            },
+        )
+        try:
+            return response.json()
+        except Exception as json_exc:
+            raise RuntimeError("Codex API response could not be parsed as JSON") from json_exc
 
 
 def convert_sse_to_json(payload: str) -> dict[str, Any]:
@@ -144,19 +159,37 @@ def _extract_response_from_events(events: list[dict[str, Any]]) -> dict[str, Any
 
 def _extract_validated_response_from_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Validate SSE events using OpenAI typed models."""
+    validation_errors: list[str] = []
+    validated_response: dict[str, Any] | None = None
     for event in reversed(events):
         try:
             typed_event = ResponseStreamEvent.model_validate(event)
-        except Exception:
+        except Exception as exc:
+            if logger.isEnabledFor(logging.DEBUG):
+                validation_errors.append(f"event-parse: {exc}")
             continue
         response_payload = getattr(typed_event, "response", None)
         if response_payload is None:
             continue
         try:
-            return Response.model_validate(response_payload).model_dump()
-        except Exception:
+            validated_response = Response.model_validate(response_payload).model_dump()
+            break
+        except Exception as exc:
+            if logger.isEnabledFor(logging.DEBUG):
+                validation_errors.append(f"response-validate: {exc}")
             continue
-    return None
+
+    if validation_errors and logger.isEnabledFor(logging.DEBUG):
+        error_summary_limit = 5
+        # Log a single summary line to avoid per-event noise.
+        logger.debug(
+            "Failed to validate response stream events; falling back to raw extraction",
+            extra={
+                "errors": validation_errors[:error_summary_limit],
+                "errors_truncated": len(validation_errors) > error_summary_limit,
+            },
+        )
+    return validated_response
 
 
 def _build_usage(usage: Mapping[str, Any] | None) -> Usage:
