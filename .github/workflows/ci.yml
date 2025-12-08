@@ -78,8 +78,8 @@ jobs:
       - name: Get previous version from TestPyPI
         id: get-previous-version
         run: |
-          # Extract package name using portable grep/sed (handles both single and double quotes)
-          package_name=$(grep '^name = ' pyproject.toml | sed 's/^name = ["'\'']\([^"'\'']*\)["'\'']/\1/')
+          # Extract package name from pyproject.toml (handles both quote types)
+          package_name=$(grep '^name = ' pyproject.toml | cut -d'=' -f2 | tr -d ' "'\''')
           
           # Get latest version from TestPyPI
           # Note: This uses Python packaging.version for proper semantic version comparison
