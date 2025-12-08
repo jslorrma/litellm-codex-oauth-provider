@@ -49,10 +49,11 @@ def define_env(env: MacrosPlugin) -> None:
         if not root.exists():
             logging.error("Root path does not exist: %s", root)
             return ""
-        module_path = root / "src" / "{{ project_name_snake_case }}"
+        module_path = root / "src" / "litellm_codex_oauth_provider"
         rendered_lines = (
-            f"::: {'.'.join(path.with_suffix('').parts)}"
+            f"::: {'.'.join(path.relative_to(module_path.parent).with_suffix('').parts)}"
             for path in sorted(module_path.rglob("*.py"))
             if "__init__.py" not in str(path) and "__main__.py" not in str(path)
         )
+        # print(f"Generated API reference for {module_path}, with {(list(rendered_lines))} items.")
         return "\n".join(rendered_lines)
