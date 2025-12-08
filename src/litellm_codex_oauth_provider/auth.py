@@ -1,6 +1,73 @@
 """Authentication module for the LiteLLM Codex OAuth Provider.
 
-This module handles reading and validating Codex OAuth tokens from the auth.json file.
+This module handles reading, validating, and managing OAuth tokens from the Codex CLI's
+auth.json file. It provides a complete authentication context including bearer tokens
+and ChatGPT account ID extraction from JWT claims.
+
+The authentication system supports:
+- Automatic token validation and expiry checking
+- JWT token parsing for account ID extraction
+- Token refresh using OAuth refresh tokens
+- Multiple auth.json structure formats
+- Comprehensive error handling for auth failures
+
+Authentication Flow
+-------------------
+1. **Token Extraction**: Read access_token from Codex CLI auth.json
+2. **Validation**: Check token expiry and format validity
+3. **Account ID**: Extract ChatGPT account ID from JWT claims
+4. **Refresh**: Automatically refresh expired tokens using refresh_token
+5. **Caching**: Cache validated tokens to minimize file I/O
+
+Supported Auth Formats
+----------------------
+The module handles multiple auth.json structures:
+- Nested: `{"chatgpt": {"access_token": "...", "refresh_token": "..."}}`
+- Flat: `{"access_token": "...", "refresh_token": "..."}`
+- Legacy: `{"auth": {"access_token": "..."}}`
+- Tokens: `{"tokens": {"access_token": "..."}}`
+
+Examples
+--------
+Basic authentication context retrieval:
+
+>>> from litellm_codex_oauth_provider.auth import get_auth_context
+>>> context = get_auth_context()
+>>> print(f"Token: {context.access_token[:20]}...")
+>>> print(f"Account ID: {context.account_id}")
+
+Direct token extraction:
+
+>>> from litellm_codex_oauth_provider.auth import get_bearer_token
+>>> token = get_bearer_token()
+
+Token refresh:
+
+>>> from litellm_codex_oauth_provider.auth import _refresh_token
+>>> new_token = _refresh_token()
+
+Error handling:
+
+>>> try:
+...     context = get_auth_context()
+... except CodexAuthFileNotFoundError:
+...     print("Run 'codex login' first")
+... except CodexAuthTokenExpiredError:
+...     print("Token expired, refresh needed")
+
+Notes
+-----
+- Tokens are cached in memory to minimize file I/O
+- JWT account ID extraction handles base64 URL-safe encoding
+- Refresh tokens are obtained from the same auth.json structure
+- All file operations use pathlib for cross-platform compatibility
+- Debug logging available via CODEX_DEBUG environment variable
+
+See Also
+--------
+- `CodexAuthError`: Base exception for authentication errors
+- `CodexAuthTokenExpiredError`: Raised when tokens are expired
+- `CodexAuthRefreshError`: Raised when token refresh fails
 """
 
 from __future__ import annotations
@@ -27,7 +94,32 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class AuthContext:
-    """Authentication context decoded from auth.json."""
+    """Authentication context decoded from auth.json.
+
+    This dataclass holds the essential authentication information extracted from
+    the Codex CLI auth.json file, including the bearer token and ChatGPT account ID.
+
+    Attributes
+    ----------
+    access_token : str
+        The OAuth bearer token for API authentication
+    account_id : str
+        The ChatGPT account ID extracted from JWT token claims
+
+    Examples
+    --------
+    >>> from litellm_codex_oauth_provider.auth import get_auth_context
+    >>> context = get_auth_context()
+    >>> print(f"Token: {context.access_token[:20]}...")
+    >>> print(f"Account ID: {context.account_id}")
+
+    Notes
+    -----
+    - The dataclass is frozen to prevent modification after creation
+    - Both attributes are required and must be provided during initialization
+    - The access_token is used for HTTP Authorization headers
+    - The account_id is used for ChatGPT-specific API headers
+    """
 
     access_token: str
     account_id: str
@@ -150,7 +242,66 @@ def _decode_account_id(access_token: str) -> str:
 
 
 def get_auth_context() -> AuthContext:
-    """Return the bearer token and decoded ChatGPT account ID."""
+    """Return the bearer token and decoded ChatGPT account ID.
+
+    This function loads the authentication data from the Codex CLI auth.json file,
+    extracts the bearer token, decodes the ChatGPT account ID from JWT claims,
+    and returns them as an AuthContext object.
+
+    The function handles the complete authentication flow:
+    1. Locates and reads the Codex CLI auth.json file
+    2. Extracts the access token from the appropriate structure
+    3. Validates token format and checks expiry
+    4. Decodes JWT claims to extract account ID
+    5. Returns authenticated context
+
+    Returns
+    -------
+    AuthContext
+        Object containing the bearer token and ChatGPT account ID.
+
+    Raises
+    ------
+    CodexAuthFileNotFoundError
+        If the Codex CLI auth.json file is not found. This typically means
+        the user hasn't run 'codex login' yet.
+    CodexAuthTokenError
+        If there's an issue with the token format or structure in the auth file.
+    CodexAuthTokenExpiredError
+        If the access token has expired and needs to be refreshed.
+
+    Examples
+    --------
+    Basic usage:
+
+    >>> from litellm_codex_oauth_provider.auth import get_auth_context
+    >>> context = get_auth_context()
+    >>> print(f"Using token: {context.access_token[:20]}...")
+    >>> print(f"Account ID: {context.account_id}")
+
+    Error handling:
+
+    >>> try:
+    ...     context = get_auth_context()
+    ... except CodexAuthFileNotFoundError:
+    ...     print("Please run 'codex login' first")
+    ... except CodexAuthTokenExpiredError:
+    ...     print("Token expired, please refresh with 'codex login'")
+
+    Notes
+    -----
+    - The function automatically handles multiple auth.json structure formats
+    - JWT account ID extraction uses URL-safe base64 decoding
+    - Token expiry is checked against the current time
+    - The function caches the context to minimize file I/O operations
+    - All file operations use pathlib for cross-platform compatibility
+
+    See Also
+    --------
+    - `get_bearer_token`: Direct token extraction without account ID
+    - `_refresh_token`: Token refresh functionality
+    - `AuthContext`: The returned authentication context object
+    """
     token = _extract_bearer_token()
     account_id = _decode_account_id(token)
     return AuthContext(access_token=token, account_id=account_id)
