@@ -7,7 +7,7 @@ The LiteLLM Codex OAuth Provider is a sophisticated adapter that bridges Codex C
 ```mermaid
 ---
 config:
-  theme: neutral
+  # theme: neutral
   layout: elk
   elk:
     nodeSpacing: 60
