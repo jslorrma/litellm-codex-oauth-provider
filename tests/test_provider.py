@@ -139,7 +139,7 @@ def test_completion_success(
         "litellm_codex_oauth_provider.provider.get_auth_context",
         return_value=AuthContext(access_token="test.token", account_id="acct-1"),
     )
-    post_spy = mocker.patch.object(
+    dispatch_spy = mocker.patch.object(
         provider, "_dispatch_response_request", return_value=mock_openai_response
     )
 
@@ -154,8 +154,8 @@ def test_completion_success(
 
     assert isinstance(result, ModelResponse)
     assert result.choices[0].message.content == "Hello, world!"
-    payload = post_spy.call_args.kwargs["payload"]
-    headers = post_spy.call_args.kwargs["extra_headers"]
+    payload = dispatch_spy.call_args.kwargs["payload"]
+    headers = dispatch_spy.call_args.kwargs["extra_headers"]
     assert payload["model"] == "gpt-5.1-codex"
     assert payload["reasoning"]["effort"] == "low"
     assert payload["store"] is False

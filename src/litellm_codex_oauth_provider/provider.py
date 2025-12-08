@@ -217,8 +217,9 @@ class CodexAuthProvider(CustomLLM):
             if key in passthrough_keys and value is not None
         }
 
-        # The Codex responses endpoint rejects max_output_tokens/max_tokens and temperature/safety_identifier.
-        # Drop them to avoid 400s while keeping parity with OpenAI signature.
+        # These parameters are accepted for OpenAI compatibility, but are filtered out before sending to Codex,
+        # since Codex does not support them. This allows the provider to maintain API signature parity with OpenAI,
+        # while preventing 400 errors from unsupported parameters.
         unsupported = {
             "max_tokens",
             "max_output_tokens",
