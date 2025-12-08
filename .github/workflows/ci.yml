@@ -72,14 +72,20 @@ jobs:
       - name: Get current version
         id: get-version
         run: |
+          # Use pixi to run 'hatch version' which reads from src/litellm_codex_oauth_provider/_version.py
           echo "current_version=$(pixi run -e build get-version)" >> "$GITHUB_ENV"
 
       - name: Get previous version from TestPyPI
         id: get-previous-version
         run: |
-          package_name=$(grep -Po '(?<=^name = \")[^\"]*' pyproject.toml)
+          # Extract package name using portable grep/sed
+          package_name=$(grep '^name = ' pyproject.toml | sed 's/^name = "\([^"]*\)"/\1/')
+          
+          # Get latest version from TestPyPI using proper version sorting
           previous_version=$(curl -sf https://test.pypi.org/pypi/$package_name/json \
-            | jq -r '.releases | keys | .[-1]')
+            | jq -r '.releases | keys | sort_by(split(".") | map(tonumber)) | .[-1]')
+          
+          # Fallback to 0.0.0 if package doesn't exist yet
           if [ "$previous_version" = "null" ] || [ -z "$previous_version" ]; then
             previous_version="0.0.0"
           fi
