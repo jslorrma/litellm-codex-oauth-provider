@@ -56,7 +56,7 @@ from litellm_codex_oauth_provider import codex_auth_provider
 
 # Register the custom provider
 litellm.custom_provider_map = [
-    {"provider": "codex", "custom_handler": CodexAuthProvider}
+    {"provider": "codex", "custom_handler": codex_auth_provider}
 ]
 
 # Use with LiteLLM
@@ -65,8 +65,6 @@ response = litellm.completion(
     messages=[
         {"role": "user", "content": "Write a Python function to reverse a string"}
     ],
-    temperature=0.7,
-    max_tokens=500
 )
 
 print(response.choices[0].message.content)
