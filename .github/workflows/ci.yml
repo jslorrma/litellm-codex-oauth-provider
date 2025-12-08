@@ -85,6 +85,7 @@ jobs:
         id: get-previous-version
         run: |
           # Extract package name from pyproject.toml (handles both quote types)
+          # Note: This assumes standard TOML format. For complex cases, consider using tomllib/tomli
           package_name=$(grep '^name = ' pyproject.toml | cut -d'=' -f2 | tr -d ' "'\''')
           
           # Get latest version from TestPyPI
@@ -104,7 +105,10 @@ jobs:
                   print(max(versions)[1])
               else:
                   print('0.0.0')
-          except:
+          except (json.JSONDecodeError, KeyError, ValueError) as e:
+              # Package not found or JSON parse error - fallback to 0.0.0
+              print('0.0.0', file=sys.stderr)
+              print(f'Warning: {e}', file=sys.stderr)
               print('0.0.0')
           ")
           
