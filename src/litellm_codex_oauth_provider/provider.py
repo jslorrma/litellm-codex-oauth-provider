@@ -283,7 +283,6 @@ class CodexAuthProvider(CustomLLM):
     ) -> ModelResponse:
         """Completion method - required by LiteLLM CustomLLM interface."""
         _ = custom_llm_provider  # parameter reserved by LiteLLM interface
-        _ = api_base  # maintained for LiteLLM interface compatibility
 
         kwargs = dict(kwargs)
         prompt_cache_key = kwargs.pop("prompt_cache_key", None)
@@ -325,7 +324,6 @@ class CodexAuthProvider(CustomLLM):
         self, model: str, messages: list[dict[str, Any]], api_base: str | None = None, **kwargs: Any
     ) -> ModelResponse:
         """Async completion for LiteLLM usage."""
-        _ = api_base  # maintained for LiteLLM interface compatibility
         kwargs = dict(kwargs)
         prompt_cache_key = kwargs.pop("prompt_cache_key", None)
         base_url = self._resolve_base_url(api_base)
