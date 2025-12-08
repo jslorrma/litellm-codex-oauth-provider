@@ -1,8 +1,7 @@
-"""Custom OpenAI clients that inject Codex authentication headers."""
+"""Custom OpenAI clients for Codex authentication headers (minimal, no CF hacks)."""
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -17,52 +16,12 @@ if TYPE_CHECKING:
     from openai._base_client import FinalRequestOptions
 
 
-logger = logging.getLogger(__name__)
-
-
-def _bootstrap_cf_cookies(base_url: str, timeout: float) -> httpx.Cookies:
-    """Warm Cloudflare cookies to avoid HTML challenges."""
-    cookies = httpx.Cookies()
-    headers = {
-        "Origin": "https://chatgpt.com",
-        "Referer": "https://chatgpt.com/",
-    }
-    try:
-        with httpx.Client(
-            base_url=base_url,
-            headers=headers,
-            timeout=timeout,
-            follow_redirects=True,
-        ) as client:
-            for path in ("", "responses"):
-                try:
-                    client.get(path or "/", timeout=timeout)
-                except Exception:
-                    continue
-            cookies.update(client.cookies)
-    except Exception:  # pragma: no cover - diagnostic only
-        logger.debug("Cloudflare preflight failed; continuing without cookies", exc_info=True)
-    return cookies
-
-
 def _create_http_client(base_url: str, timeout: float) -> httpx.Client:
-    cookies = _bootstrap_cf_cookies(base_url, timeout)
-    return httpx.Client(
-        base_url=base_url,
-        timeout=timeout,
-        follow_redirects=True,
-        cookies=cookies,
-    )
+    return httpx.Client(base_url=base_url, timeout=timeout, follow_redirects=True)
 
 
 def _create_async_http_client(base_url: str, timeout: float) -> httpx.AsyncClient:
-    cookies = _bootstrap_cf_cookies(base_url, timeout)
-    return httpx.AsyncClient(
-        base_url=base_url,
-        timeout=timeout,
-        follow_redirects=True,
-        cookies=cookies,
-    )
+    return httpx.AsyncClient(base_url=base_url, timeout=timeout, follow_redirects=True)
 
 
 class _BaseCodexClient(OpenAI):
@@ -113,17 +72,6 @@ class _BaseCodexClient(OpenAI):
         headers.setdefault(constants.OPENAI_ORIGINATOR_HEADER, constants.OPENAI_ORIGINATOR_VALUE)
         headers.setdefault("Content-Type", "application/json")
         headers["Accept"] = headers.get("Accept") or "text/event-stream"
-        headers.setdefault("Accept-Language", constants.BROWSER_ACCEPT_LANGUAGE)
-        headers.setdefault("Origin", "https://chatgpt.com")
-        headers.setdefault("Referer", "https://chatgpt.com/")
-        try:
-            cookie_header = "; ".join(
-                f"{name}={value}" for name, value in self._client.cookies.items()
-            )
-        except Exception:
-            cookie_header = ""
-        if cookie_header:
-            headers["Cookie"] = cookie_header
 
         account_id = self._account_id_provider() or ""
         if account_id:
@@ -186,17 +134,6 @@ class AsyncCodexOpenAIClient(AsyncOpenAI):
         headers.setdefault(constants.OPENAI_ORIGINATOR_HEADER, constants.OPENAI_ORIGINATOR_VALUE)
         headers.setdefault("Content-Type", "application/json")
         headers["Accept"] = headers.get("Accept") or "text/event-stream"
-        headers.setdefault("Accept-Language", constants.BROWSER_ACCEPT_LANGUAGE)
-        headers.setdefault("Origin", "https://chatgpt.com")
-        headers.setdefault("Referer", "https://chatgpt.com/")
-        try:
-            cookie_header = "; ".join(
-                f"{name}={value}" for name, value in self._client.cookies.items()
-            )
-        except Exception:
-            cookie_header = ""
-        if cookie_header:
-            headers["Cookie"] = cookie_header
 
         account_id = self._account_id_provider() or ""
         if account_id:

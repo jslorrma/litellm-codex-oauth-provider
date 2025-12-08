@@ -15,7 +15,6 @@ from typing import Any
 import httpx
 from litellm import CustomLLM, ModelResponse
 from litellm.utils import CustomStreamWrapper
-from openai import APIError, APIStatusError
 
 from . import constants
 from .adapter import build_streaming_chunk, parse_response_body, transform_response
@@ -134,10 +133,11 @@ class CodexAuthProvider(CustomLLM):
         reasoning_config: dict[str, Any],
         **kwargs: Any,
     ) -> dict[str, Any]:
-        optional_params = kwargs.pop("optional_params", {})
+        optional_params = kwargs.pop("optional_params", {}) or {}
         normalized_tools = self._normalize_tools(
             kwargs.pop("tools", None) or optional_params.pop("tools", None)
         )
+        merged_options = {**optional_params, **kwargs}
 
         payload: dict[str, Any] = {
             "model": model,
@@ -146,13 +146,12 @@ class CodexAuthProvider(CustomLLM):
             "include": [constants.REASONING_INCLUDE_TARGET],
             "store": False,
             **reasoning_config,
-            **optional_params,  # deprecated fallback
         }
 
         if normalized_tools:
             payload["tools"] = normalized_tools
 
-        payload.update(self._filter_payload_options(kwargs))
+        payload.update(self._filter_payload_options(merged_options))
 
         if prompt_cache_key:
             payload["prompt_cache_key"] = prompt_cache_key
@@ -203,21 +202,14 @@ class CodexAuthProvider(CustomLLM):
 
     @staticmethod
     def _filter_payload_options(options: Mapping[str, Any]) -> dict[str, Any]:
+        """Allow only Response API-supported parameters, remapping when needed."""
         passthrough_keys = {
-            "background",
-            "max_output_tokens",
             "metadata",
             "parallel_tool_calls",
             "prompt",
-            "prompt_cache_retention",
-            "safety_identifier",
-            "service_tier",
-            "temperature",
+            "previous_response_id",
             "tool_choice",
-            "top_logprobs",
-            "top_p",
             "user",
-            "max_tool_calls",
         }
         passthrough = {
             key: value
@@ -225,9 +217,26 @@ class CodexAuthProvider(CustomLLM):
             if key in passthrough_keys and value is not None
         }
 
-        max_tokens = options.get("max_tokens")
-        if max_tokens is not None and "max_output_tokens" not in passthrough:
-            passthrough["max_output_tokens"] = max_tokens
+        # The Codex responses endpoint rejects max_output_tokens/max_tokens and temperature/safety_identifier.
+        # Drop them to avoid 400s while keeping parity with OpenAI signature.
+        unsupported = {
+            "max_tokens",
+            "max_output_tokens",
+            "temperature",
+            "safety_identifier",
+            "prompt_cache_retention",
+            "truncation",
+            "top_logprobs",
+            "top_p",
+            "service_tier",
+            "max_tool_calls",
+            "background",
+        }
+
+        if logger.isEnabledFor(logging.DEBUG):
+            dropped = sorted(set(options).intersection(unsupported))
+            if dropped:
+                logger.debug("Dropped unsupported response params", extra={"keys": dropped})
 
         return passthrough
 
@@ -414,52 +423,16 @@ class CodexAuthProvider(CustomLLM):
     ) -> dict[str, Any]:
         client = self._get_sync_client(base_url)
         self._log_request_debug(base_url, payload, extra_headers)
-        try:
-            with client.responses.stream(
-                extra_headers=extra_headers or None,
-                **payload,
-            ) as stream:
-                final_response = stream.get_final_response()
-        except APIStatusError as exc:
-            self._log_api_error(exc)
-            if self._is_cloudflare_response(exc.response):
-                return self._dispatch_via_httpx(
-                    client=client, payload=payload, extra_headers=extra_headers
-                )
-            raise RuntimeError(self._format_http_error(exc.response)) from exc
-        except APIError as exc:
-            logger.error("Codex API error (APIError): %s", exc)
-            raise RuntimeError(f"Codex API error: {exc}") from exc
-        except httpx.HTTPError as exc:  # pragma: no cover - network/transport errors
-            raise RuntimeError(f"Codex API error: {exc}") from exc
-
-        return final_response.model_dump()
+        return self._dispatch_via_httpx(client=client, payload=payload, extra_headers=extra_headers)
 
     async def _dispatch_response_request_async(
         self, *, payload: dict[str, Any], extra_headers: dict[str, str], base_url: str
     ) -> dict[str, Any]:
         client = self._get_async_client(base_url)
         self._log_request_debug(base_url, payload, extra_headers)
-        try:
-            async with client.responses.stream(
-                extra_headers=extra_headers or None,
-                **payload,
-            ) as stream:
-                final_response = await stream.get_final_response()
-        except APIStatusError as exc:
-            self._log_api_error(exc)
-            if self._is_cloudflare_response(exc.response):
-                return await self._dispatch_via_httpx_async(
-                    client=client, payload=payload, extra_headers=extra_headers
-                )
-            raise RuntimeError(self._format_http_error(exc.response)) from exc
-        except APIError as exc:
-            logger.error("Codex API error (APIError): %s", exc)
-            raise RuntimeError(f"Codex API error: {exc}") from exc
-        except httpx.HTTPError as exc:  # pragma: no cover - network/transport errors
-            raise RuntimeError(f"Codex API error: {exc}") from exc
-
-        return final_response.model_dump()
+        return await self._dispatch_via_httpx_async(
+            client=client, payload=payload, extra_headers=extra_headers
+        )
 
     def _log_request_debug(
         self, base_url: str, payload: Mapping[str, Any], extra_headers: Mapping[str, str]
@@ -490,31 +463,6 @@ class CodexAuthProvider(CustomLLM):
             },
         )
 
-    def _log_api_error(self, exc: APIStatusError) -> None:
-        if not logger.isEnabledFor(logging.DEBUG):
-            return
-        try:
-            body = exc.response.text
-        except Exception:  # pragma: no cover - logging only
-            body = "<unreadable>"
-        logger.debug(
-            "Codex API status error",
-            extra={
-                "status_code": exc.status_code,
-                "request_url": str(exc.response.url),
-                "response_body": body,
-                "response_headers": dict(exc.response.headers),
-            },
-        )
-
-    @staticmethod
-    def _is_cloudflare_response(response: httpx.Response | None) -> bool:
-        if response is None:
-            return False
-        content_type = (response.headers.get("content-type") or "").lower()
-        body = response.content.lower() if response.content else b""
-        return "text/html" in content_type and b"cloudflare" in body
-
     def _dispatch_via_httpx(
         self,
         *,
@@ -530,19 +478,42 @@ class CodexAuthProvider(CustomLLM):
             "Content-Type": "application/json",
         }
         headers.setdefault("Authorization", client.auth_headers.get("Authorization", ""))
-        cookie_header = "; ".join(
-            f"{name}={value}"
-            for name, value in client.http_client.cookies.items()  # type: ignore[attr-defined]
-        )
-        if cookie_header:
-            headers["Cookie"] = cookie_header
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Fallback POST via httpx",
+                extra={
+                    "url": "/responses",
+                    "headers": {
+                        k: ("***" if k.lower() == "authorization" else v)
+                        for k, v in headers.items()
+                    },
+                    "payload_keys": sorted(payload_with_stream.keys()),
+                },
+            )
 
         response = client.http_client.post(  # type: ignore[attr-defined]
             "/responses",
             json=payload_with_stream,
             headers=headers,
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            sanitized_headers = {
+                key: ("***" if key.lower() == "authorization" else value)
+                for key, value in headers.items()
+            }
+            logger.warning(
+                "HTTPX fallback failed",
+                extra={
+                    "status_code": exc.response.status_code,
+                    "body": exc.response.text[:1000],
+                    "response_headers": dict(exc.response.headers),
+                    "request_headers": sanitized_headers,
+                    "payload": payload_with_stream,
+                },
+            )
+            raise
         return parse_response_body(response)
 
     async def _dispatch_via_httpx_async(
@@ -560,12 +531,6 @@ class CodexAuthProvider(CustomLLM):
             "Content-Type": "application/json",
         }
         headers.setdefault("Authorization", client.auth_headers.get("Authorization", ""))
-        cookie_header = "; ".join(
-            f"{name}={value}"
-            for name, value in client.http_client.cookies.items()  # type: ignore[attr-defined]
-        )
-        if cookie_header:
-            headers["Cookie"] = cookie_header
 
         response = await client.http_client.post(  # type: ignore[attr-defined]
             "/responses",
@@ -600,20 +565,3 @@ class CodexAuthProvider(CustomLLM):
 
 # Instantiate the provider for convenience in LiteLLM mappings
 codex_auth_provider = CodexAuthProvider()
-
-
-class _StreamingLoggingStub:
-    """Minimal logging stub to satisfy CustomStreamWrapper expectations."""
-
-    def __init__(self) -> None:
-        self.model_call_details: dict[str, Any] = {"litellm_params": {}}
-        self.completion_start_time: Any = None
-
-    def _update_completion_start_time(self, completion_start_time: Any) -> None:
-        self.completion_start_time = completion_start_time
-
-    def failure_handler(self, *_args: Any, **_kwargs: Any) -> None:
-        return None
-
-    def success_handler(self, *_args: Any, **_kwargs: Any) -> None:
-        return None
