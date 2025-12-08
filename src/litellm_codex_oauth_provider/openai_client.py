@@ -1,4 +1,7 @@
-"""Custom OpenAI clients for Codex authentication headers (minimal, no CF hacks)."""
+"""Custom OpenAI clients for Codex authentication headers.
+
+This module provides synchronous and asynchronous OpenAI client classes that handle Codex authentication.
+"""
 
 from __future__ import annotations
 
