@@ -29,6 +29,8 @@ def parse_response_body(response: httpx.Response) -> dict[str, Any]:
             return parsed
         raise RuntimeError("Codex API returned stream without final response event")
     try:
+        # Use OpenAI's typed Response model for strict schema validation and parsing.
+        # If this fails (e.g., due to schema mismatch or unexpected fields), fall back to raw JSON parsing below.
         return Response.model_validate_json(response.content).model_dump()
     except json.JSONDecodeError as exc:
         raise RuntimeError("Codex API returned invalid JSON") from exc
@@ -42,6 +44,7 @@ def parse_response_body(response: httpx.Response) -> dict[str, Any]:
             },
         )
         try:
+            # Fallback: parse raw JSON if typed model validation fails
             return response.json()
         except Exception as json_exc:
             raise RuntimeError("Codex API response could not be parsed as JSON") from json_exc
@@ -141,7 +144,11 @@ def build_streaming_chunk(response: ModelResponse) -> GenericStreamingChunk:
 
 
 def _extract_response_from_events(events: list[dict[str, Any]]) -> dict[str, Any]:
-    """Return the final response payload from parsed SSE events."""
+    """Return the final response payload from parsed SSE events.
+
+    This is a best-effort extraction without strict schema validation. Used as a fallback
+    when typed model validation fails or is not possible.
+    """
     for event in reversed(events):
         if event.get("type") in {"response.done", "response.completed"}:
             response_payload = event.get("response") or event.get("data")
@@ -158,7 +165,10 @@ def _extract_response_from_events(events: list[dict[str, Any]]) -> dict[str, Any
 
 
 def _extract_validated_response_from_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Validate SSE events using OpenAI typed models."""
+    """Validate SSE events using OpenAI typed models.
+
+    Return the first successfully validated response payload, or None if none validate.
+    """
     validation_errors: list[str] = []
     validated_response: dict[str, Any] | None = None
     for event in reversed(events):
