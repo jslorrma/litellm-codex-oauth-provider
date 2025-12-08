@@ -1,12 +1,12 @@
 # API Reference
 
-This document provides comprehensive API reference for the LiteLLM Codex OAuth Provider, covering all public interfaces and internal implementation details.
+This document provides comprehensive API reference for the LiteLLM Codex OAuth Provider, covering all public interfaces and internal implementation details with the new OpenAI client architecture.
 
 ## Public API
 
 ### CodexAuthProvider Class
 
-The main entry point for the provider. This class implements the LiteLLM `CustomLLM` interface.
+The main entry point for the provider. This class implements the LiteLLM `CustomLLM` interface and uses the official OpenAI client library.
 
 ```python
 from litellm_codex_oauth_provider import CodexAuthProvider
@@ -20,7 +20,7 @@ provider = CodexAuthProvider()
 def __init__(self) -> None
 ```
 
-Initializes the provider with default configuration.
+Initializes the provider with OpenAI client integration and default configuration.
 
 **Attributes:**
 - `base_url`: Base URL for Codex API
@@ -28,6 +28,8 @@ Initializes the provider with default configuration.
 - `_token_expiry`: Token expiry timestamp (internal)
 - `_account_id`: Cached ChatGPT account ID (internal)
 - `_codex_mode_enabled`: Feature flag for Codex-specific behavior
+- `_client`: Synchronous OpenAI client instance
+- `_async_client`: Asynchronous OpenAI client instance
 
 #### Public Methods
 
@@ -44,7 +46,7 @@ def completion(
 ) -> ModelResponse
 ```
 
-Main completion method implementing LiteLLM interface.
+Main completion method implementing LiteLLM interface with OpenAI client delegation.
 
 **Parameters:**
 - `model`: Model identifier (supports `codex/` prefix)
@@ -55,21 +57,25 @@ Main completion method implementing LiteLLM interface.
 
 **Supported kwargs:**
 - `prompt_cache_key`: Session caching key
-- `temperature`: Response creativity (0.0-2.0)
-- `max_tokens` / `max_output_tokens`: Maximum response length
 - `tools`: List of OpenAI-style tool definitions
 - `tool_choice`: Tool selection strategy
 - `parallel_tool_calls`: Enable parallel tool execution
-- `frequency_penalty`: Frequency penalty for repetition
-- `presence_penalty`: Presence penalty for new topics
-- `logprobs`: Include log probabilities
-- `top_logprobs`: Number of top log probabilities
 - `metadata`: Additional metadata
-- `response_format`: Response format specification
-- `seed`: Random seed for reproducibility
-- `stop`: Stop sequences
-- `top_p`: Nucleus sampling parameter
 - `user`: User identifier
+- `reasoning_effort`: Reasoning effort level
+- `verbosity`: Response verbosity level
+
+**Note:** The following parameters are automatically filtered out as they're not supported by the Codex responses endpoint:
+- `max_tokens`, `max_output_tokens`
+- `temperature`
+- `safety_identifier`
+- `prompt_cache_retention`
+- `truncation`
+- `top_logprobs`
+- `top_p`
+- `service_tier`
+- `max_tool_calls`
+- `background`
 
 **Returns:**
 - `ModelResponse`: LiteLLM-compatible response object
@@ -85,8 +91,7 @@ response = provider.completion(
     messages=[
         {"role": "user", "content": "Explain quantum computing"}
     ],
-    temperature=0.7,
-    max_tokens=1000
+    metadata={"source": "example"}
 )
 ```
 
@@ -102,7 +107,7 @@ async def acompletion(
 ) -> ModelResponse
 ```
 
-Asynchronous completion method.
+Asynchronous completion method using async OpenAI client.
 
 **Parameters:** Same as `completion()`
 
@@ -135,7 +140,7 @@ def streaming(
 ) -> CustomStreamWrapper
 ```
 
-Streaming completion method.
+Streaming completion method (simulated streaming with single chunk).
 
 **Parameters:** Same as `completion()`
 
@@ -199,6 +204,163 @@ def account_id(self) -> str | None
 Returns the cached ChatGPT account ID.
 
 ## Internal API
+
+### OpenAI Client Module (`openai_client.py`)
+
+#### _BaseCodexClient Class
+
+```python
+class _BaseCodexClient(OpenAI):
+    def __init__(
+        self,
+        *,
+        token_provider: Callable[[], str],
+        account_id_provider: Callable[[], str | None],
+        base_url: str,
+        timeout: float = 60.0,
+        http_client: httpx.Client | None = None,
+        **kwargs: Any,
+    ) -> None
+```
+
+Base class for Codex-aware OpenAI clients with custom authentication.
+
+**Parameters:**
+- `token_provider`: Function that returns the current bearer token
+- `account_id_provider`: Function that returns the current account ID
+- `base_url`: Base URL for the API
+- `timeout`: Request timeout in seconds
+- `http_client`: Optional custom httpx client
+- `**kwargs`: Additional arguments passed to OpenAI client
+
+#### CodexOpenAIClient Class
+
+```python
+class CodexOpenAIClient(_BaseCodexClient)
+```
+
+Synchronous Codex-aware OpenAI client.
+
+**Features:**
+- Automatic token injection via token provider
+- Custom header injection for Codex API
+- Account ID resolution and injection
+- OpenAI beta headers for experimental features
+
+#### AsyncCodexOpenAIClient Class
+
+```python
+class AsyncCodexOpenAIClient(AsyncOpenAI)
+```
+
+Asynchronous Codex-aware OpenAI client.
+
+**Features:** Same as `CodexOpenAIClient` but for async operations.
+
+### Response Adapter Module (`adapter.py`)
+
+#### transform_response()
+
+```python
+def transform_response(openai_response: dict[str, Any], model: str) -> ModelResponse
+```
+
+Transforms OpenAI API response to LiteLLM format.
+
+**Parameters:**
+- `openai_response`: Response from OpenAI/Codex API
+- `model`: Model identifier for the response
+
+**Returns:** `ModelResponse` in LiteLLM format
+
+**Features:**
+- OpenAI typed model validation
+- Multiple response format support
+- Tool call extraction and normalization
+- Usage statistics calculation
+
+#### parse_response_body()
+
+```python
+def parse_response_body(response: httpx.Response) -> dict[str, Any]
+```
+
+Parses HTTP response body handling multiple formats.
+
+**Parameters:**
+- `response`: httpx Response object
+
+**Returns:** Parsed response data as dictionary
+
+**Features:**
+- SSE (Server-Sent Events) detection and parsing
+- JSON response handling
+- OpenAI typed model validation with fallbacks
+
+#### convert_sse_to_json()
+
+```python
+def convert_sse_to_json(payload: str) -> dict[str, Any]
+```
+
+Converts buffered SSE text to final JSON payload.
+
+**Parameters:**
+- `payload`: Raw SSE text data
+
+**Returns:** Parsed JSON response
+
+**Features:**
+- Event stream parsing
+- OpenAI typed model validation
+- Fallback to manual parsing if validation fails
+
+#### build_streaming_chunk()
+
+```python
+def build_streaming_chunk(response: ModelResponse) -> GenericStreamingChunk
+```
+
+Builds a minimal streaming chunk from a completed response.
+
+**Parameters:**
+- `response`: Completed ModelResponse
+
+**Returns:** GenericStreamingChunk for streaming simulation
+
+### Remote Resources Module (`remote_resources.py`)
+
+#### fetch_codex_instructions()
+
+```python
+def fetch_codex_instructions(normalized_model: str = "gpt-5.1-codex") -> str
+```
+
+Fetches Codex instructions from GitHub with caching.
+
+**Parameters:**
+- `normalized_model`: Target model for instruction selection
+
+**Returns:** Instruction text
+
+**Features:**
+- ETag-based caching with 15-minute TTL
+- GitHub API integration for latest releases
+- Fallback to cached or default instructions
+- Model family-based instruction selection
+
+#### CacheMetadata Class
+
+```python
+@dataclass(slots=True)
+class CacheMetadata:
+    etag: str | None
+    tag: str | None
+    last_checked: float | None
+    url: str | None
+```
+
+Metadata for cached Codex instructions.
 
 ### Authentication Module (`auth.py`)
 
@@ -345,6 +507,7 @@ def derive_instructions(
     *,
     codex_mode: bool,
     normalized_model: str,
+    instructions_text: str | None = None,
 ) -> tuple[str, list[dict[str, Any]]]
 ```
 
@@ -354,6 +517,7 @@ Extracts instructions and converts messages to Codex input format.
 - `messages`: OpenAI-style message list
 - `codex_mode`: Enable Codex-specific processing
 - `normalized_model`: Target model for instruction selection
+- `instructions_text`: Pre-fetched instructions (optional)
 
 **Returns:** Tuple of (instructions, filtered_messages)
 
@@ -362,21 +526,6 @@ Extracts instructions and converts messages to Codex input format.
 - User messages → Direct conversion
 - Assistant messages → Direct conversion
 - Tool messages → `function_call_output` format
-
-#### get_codex_instructions()
-
-```python
-def get_codex_instructions(normalized_model: str = "gpt-5.1-codex") -> str
-```
-
-Fetches Codex instructions from GitHub with caching.
-
-**Parameters:**
-- `normalized_model`: Target model for instruction selection
-
-**Returns:** Instruction text
-
-**Caching:** 15-minute TTL with ETag support
 
 #### build_tool_bridge_message()
 
@@ -478,6 +627,7 @@ class CodexAuthRefreshError(CodexAuthError)
 | `CODEX_AUTH_FILE` | `Path` | `~/.codex/auth.json` | Auth file location |
 | `CODEX_CACHE_DIR` | `Path` | `~/.opencode/cache` | Cache directory |
 | `CODEX_MODE` | `bool` | `True` | Enable Codex features |
+| `CODEX_DEBUG` | `bool` | `False` | Enable debug logging |
 
 ### Model Configuration
 
@@ -583,11 +733,8 @@ result = asyncio.run(async_completion())
 response = provider.completion(
     model="codex/gpt-5.1-codex-low",
     messages=[{"role": "user", "content": "Analyze this data"}],
-    temperature=0.3,
-    max_output_tokens=2000,
-    frequency_penalty=0.1,
-    presence_penalty=0.1,
-    metadata={"source": "analysis_tool"}
+    metadata={"source": "analysis_tool"},
+    user="user123"
 )
 ```
 
@@ -633,4 +780,42 @@ except CodexAuthTokenExpiredError:
     print("Token expired - run 'codex login' to refresh")
 except CodexAuthRefreshError:
     print("Token refresh failed - check network connection")
+```
+
+## Customization
+
+### Custom OpenAI Client
+
+```python
+from litellm_codex_oauth_provider.openai_client import CodexOpenAIClient
+from openai._base_client import FinalRequestOptions
+import httpx
+
+class CustomCodexClient(CodexOpenAIClient):
+    def _prepare_options(self, options: FinalRequestOptions) -> FinalRequestOptions:
+        prepared = super()._prepare_options(options)
+        headers = httpx.Headers(prepared.headers or {})
+        headers["Custom-Header"] = "custom-value"
+        return prepared.copy(update={"headers": headers})
+```
+
+### Custom Response Adapter
+
+```python
+from litellm_codex_oauth_provider.adapter import transform_response
+from litellm import ModelResponse
+
+def custom_transform_response(openai_response: dict[str, Any], model: str) -> ModelResponse:
+    # Custom transformation logic here
+    return transform_response(openai_response, model)
+```
+
+### Custom Model Mapping
+
+```python
+# Extend model_map.py
+alias_bases = {
+    "custom-model": "target-base-model",
+    # ... more aliases
+}
 ```

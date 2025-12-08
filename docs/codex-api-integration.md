@@ -1,10 +1,96 @@
 # Codex API Integration Details
 
-This document provides comprehensive details about how the provider wraps the Codex backend API, including request/response handling, authentication flow, and internal processing details.
+This document provides comprehensive details about how the provider wraps the Codex backend API using the official OpenAI client library, including request/response handling, authentication flow, and internal processing details.
 
 ## Codex Backend API Overview
 
-The provider acts as a sophisticated adapter between LiteLLM's OpenAI-compatible interface and the ChatGPT backend API. It handles the complete request/response lifecycle while maintaining compatibility with both systems.
+The provider acts as a sophisticated adapter between LiteLLM's OpenAI-compatible interface and the ChatGPT backend API through the official OpenAI client library. It handles the complete request/response lifecycle while maintaining compatibility with both systems.
+
+## OpenAI Client Integration Architecture
+
+### Custom OpenAI Client Implementation
+
+The provider uses a custom OpenAI client that extends the official OpenAI client with Codex-specific authentication and header injection:
+
+```mermaid
+graph TD
+    A[CodexAuthProvider] --> B[CodexOpenAIClient]
+    A --> C[AsyncCodexOpenAIClient]
+
+    B --> D[_BaseCodexClient]
+    C --> E[AsyncOpenAI]
+
+    D --> F[Custom Auth Headers]
+    E --> G[Custom Auth Headers]
+
+    F --> H[Token Provider Pattern]
+    G --> H
+    H --> I[Account ID Provider]
+
+    D --> J[Header Injection Override]
+    E --> J
+    J --> K[OpenAI Beta Headers]
+    J --> L[Content-Type Headers]
+    J --> M[Accept Headers]
+    J --> N[Authorization Headers]
+```
+
+### Token Provider Pattern
+
+The OpenAI client uses a token provider pattern for dynamic authentication:
+
+```python
+class _BaseCodexClient(OpenAI):
+    def __init__(
+        self,
+        *,
+        token_provider: Callable[[], str],
+        account_id_provider: Callable[[], str | None],
+        base_url: str,
+        timeout: float = 60.0,
+        http_client: httpx.Client | None = None,
+        **kwargs: Any,
+    ) -> None:
+        # Initialize with empty API key - we'll inject auth headers
+        super().__init__(
+            api_key="",
+            base_url=base_url,
+            timeout=timeout,
+            http_client=client,
+            **kwargs,
+        )
+        self._token_provider = token_provider
+        self._account_id_provider = account_id_provider
+```
+
+### Custom Header Injection
+
+The provider overrides the `_prepare_options` method to inject Codex-specific headers:
+
+```python
+@override
+def _prepare_options(self, options: FinalRequestOptions) -> FinalRequestOptions:
+    prepared = super()._prepare_options(options)
+    headers = httpx.Headers(prepared.headers or {})
+
+    # Inject dynamic token
+    token = self._token_provider()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    # Inject Codex-specific headers
+    headers.setdefault("OpenAI-Beta", "responses=experimental")
+    headers.setdefault("originator", "codex_cli_rs")
+    headers.setdefault("Content-Type", "application/json")
+    headers["Accept"] = "text/event-stream"
+
+    # Inject account ID if available
+    account_id = self._account_id_provider() or ""
+    if account_id:
+        headers.setdefault("chatgpt-account-id", account_id)
+
+    return prepared.copy(update={"headers": headers})
+```
 
 ## Request Processing Details
 
@@ -66,7 +152,7 @@ graph TD
     L[messages] --> F
     M[instructions] --> G
     N[reasoning_effort] --> H
-    O[temperature, max_tokens] --> I
+    O[metadata, tool_choice] --> I
 ```
 
 #### Key Payload Fields
@@ -75,7 +161,7 @@ graph TD
 |-------|------|-------------|---------|
 | `model` | `str` | Normalized Codex model identifier | Model mapping |
 | `input` | `list[dict]` | Transformed message array | Message conversion |
-| `instructions` | `str` | System instructions | Prompt derivation |
+| `instructions` | `str` | System instructions | Remote resources |
 | `tools` | `list[dict]` | Normalized tool definitions | Tool processing |
 | `reasoning.effort` | `str` | Reasoning effort level | Config application |
 | `text.verbosity` | `str` | Response verbosity | Config application |
@@ -165,8 +251,7 @@ graph TD
 For streaming responses, the provider processes Server-Sent Events:
 
 ```python
-@staticmethod
-def _convert_sse_to_json(payload: str) -> dict[str, Any]:
+def convert_sse_to_json(payload: str) -> dict[str, Any]:
     """Convert buffered SSE text to final JSON payload."""
     events = []
     for line in payload.splitlines():
@@ -182,7 +267,11 @@ def _convert_sse_to_json(payload: str) -> dict[str, Any]:
         if isinstance(event, Mapping):
             events.append(event)
 
-    return CodexAuthProvider._extract_response_from_events(events)
+    validated = _extract_validated_response_from_events(events)
+    if validated:
+        return validated
+
+    return _extract_response_from_events(events)
 ```
 
 ```mermaid
@@ -202,7 +291,7 @@ The provider performs complex transformation from Codex format to LiteLLM format
 
 ```mermaid
 graph TD
-    A[Codex Response] --> B[Extract response payload]
+    A[OpenAI Response] --> B[Extract response payload]
     B --> C[Get choices array]
     C --> D{Choices present?}
     D -->|No| E[Check output field]
@@ -269,7 +358,7 @@ sequenceDiagram
     participant A as Auth Module
     participant F as auth.json
     participant C as Cache
-    participant O as OpenAI Auth API
+    participant O as OpenAI Client
 
     P->>A: get_auth_context()
     A->>C: Check cached token
@@ -300,6 +389,59 @@ graph TD
     E --> F[Extract account claim]
     F --> G[Get chatgpt_account_id]
     G --> H[Return account ID]
+```
+
+### OpenAI Client Authentication
+
+```mermaid
+sequenceDiagram
+    participant P as Provider
+    participant O as OpenAI Client
+    participant T as Token Provider
+    participant A as Account ID Provider
+    participant H as HTTP Headers
+
+    P->>O: responses.create()
+    O->>T: get_bearer_token()
+    T-->>O: access_token
+    O->>A: get_account_id()
+    A-->>O: account_id
+    O->>H: inject_custom_headers()
+    H->>H: Authorization: Bearer {token}
+    H->>H: chatgpt-account-id: {account_id}
+    H->>H: OpenAI-Beta: responses=experimental
+    O->>Backend: POST /codex/responses
+```
+
+## HTTP Dispatch Architecture
+
+### Fallback Mechanism
+
+The provider uses a fallback mechanism when OpenAI client dispatch fails:
+
+```mermaid
+graph TD
+    A[Request] --> B[Try OpenAI Client]
+    B --> C{Success?}
+    C -->|Yes| D[Return Response]
+    C -->|No| E[Fallback to httpx]
+    E --> F[Direct HTTP POST]
+    F --> G[Parse Response]
+    G --> H[Return Parsed Data]
+
+    B --> I[Log Error]
+    I --> J[Sanitize Headers]
+    J --> K[Raise Exception]
+```
+
+### HTTP Client Configuration
+
+```python
+def _create_http_client(base_url: str, timeout: float) -> httpx.Client:
+    return httpx.Client(base_url=base_url, timeout=timeout, follow_redirects=True)
+
+def _create_async_http_client(base_url: str, timeout: float) -> httpx.AsyncClient:
+    return httpx.AsyncClient(base_url=base_url, timeout=timeout, follow_redirects=True)
 ```
 
 ## Error Handling Strategy
@@ -340,6 +482,44 @@ graph TD
     I --> J
 ```
 
+## Remote Resources Management
+
+### Instruction Fetching and Caching
+
+```mermaid
+graph TD
+    A[fetch_codex_instructions] --> B[Get Model Family]
+    B --> C[Check Cache]
+    C --> D{Cache Valid?}
+    D -->|Yes| E[Return Cached]
+    D -->|No| F[Fetch from GitHub]
+    F --> G[Parse Release]
+    G --> H[Download Instructions]
+    H --> I[Update Cache]
+    I --> E
+
+    C --> J[Load Metadata]
+    J --> K[Check TTL]
+    K --> L[ETag Support]
+```
+
+### Cache Management
+
+```python
+@dataclass(slots=True)
+class CacheMetadata:
+    """Metadata for cached Codex instructions."""
+    etag: str | None
+    tag: str | None
+    last_checked: float | None
+    url: str | None
+
+def _should_use_cache(metadata: CacheMetadata, cached: str | None, now: float) -> bool:
+    if metadata.last_checked is None or cached is None:
+        return False
+    return now - float(metadata.last_checked) < constants.CODEX_INSTRUCTIONS_CACHE_TTL_SECONDS
+```
+
 ## Configuration and Constants
 
 ### Environment Variables
@@ -349,6 +529,7 @@ graph TD
 | `CODEX_AUTH_FILE` | `~/.codex/auth.json` | Path to auth file |
 | `CODEX_CACHE_DIR` | `~/.opencode/cache` | Instruction cache directory |
 | `CODEX_MODE` | `True` | Enable Codex-specific features |
+| `CODEX_DEBUG` | `False` | Enable debug logging |
 
 ### API Endpoints
 
@@ -373,15 +554,21 @@ BASE_MODELS = ("gpt-5.1-codex", "gpt-5.1-codex-max", "gpt-5.1-codex-mini", "gpt-
 2. **Instruction Caching**: 15-minute TTL with ETag support
 3. **Model Mapping**: Static dictionary (O(1) lookup)
 
-### Connection Management
+### Client Optimization
 
 ```mermaid
 graph TD
-    A[HTTP Request] --> B[Reuse httpx Client]
+    A[HTTP Request] --> B[Reuse OpenAI Client]
     B --> C[Connection pooling]
     C --> D[Keep-alive connections]
     D --> E[Reduced latency]
 ```
+
+### Response Processing
+
+1. **Typed Model Validation**: OpenAI typed models for reliable parsing
+2. **Fallback Mechanisms**: Multiple parsing strategies for robustness
+3. **Efficient Transformation**: Pure functions for predictable performance
 
 ## Security Considerations
 
@@ -402,3 +589,43 @@ graph TD
 - Detailed error messages for debugging
 - Rate limit information preservation
 - No sensitive data in error responses
+
+## Customization Points
+
+### Custom OpenAI Client
+
+Extend the OpenAI client customization:
+
+```python
+class CustomCodexClient(CodexOpenAIClient):
+    def _prepare_options(self, options: FinalRequestOptions) -> FinalRequestOptions:
+        prepared = super()._prepare_options(options)
+        # Add custom headers or modifications
+        headers = httpx.Headers(prepared.headers or {})
+        headers["Custom-Header"] = "custom-value"
+        return prepared.copy(update={"headers": headers})
+```
+
+### Custom Response Adapter
+
+Override response transformation:
+
+```python
+def custom_transform_response(openai_response: dict[str, Any], model: str) -> ModelResponse:
+    # Custom transformation logic
+    return transform_response(openai_response, model)
+```
+
+### Custom Model Mapping
+
+Extend model normalization:
+
+```python
+# Add custom model aliases
+alias_bases = {
+    "custom-model": "target-base-model",
+    # ... more aliases
+}
+```
+
+This architecture provides a robust, maintainable, and extensible foundation for integrating Codex authentication with OpenAI-compatible APIs while maintaining full compatibility with the LiteLLM ecosystem.

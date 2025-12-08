@@ -1,6 +1,6 @@
 # Architecture Overview
 
-The LiteLLM Codex OAuth Provider is a sophisticated adapter that bridges Codex CLI authentication with OpenAI-compatible APIs. This document provides a comprehensive architectural overview of the system.
+The LiteLLM Codex OAuth Provider is a sophisticated adapter that bridges Codex CLI authentication with OpenAI-compatible APIs through a modern architecture using the official OpenAI client library. This document provides a comprehensive architectural overview of the system.
 
 ## System Architecture
 
@@ -19,22 +19,38 @@ graph TB
 
     subgraph "Core Provider"
         D --> I[CodexAuthProvider]
-        I --> J[Request Builder]
-        I --> K[HTTP Transport]
-        I --> L[Response Transformer]
+        I --> J[OpenAI Client Delegation]
+        I --> K[Request Orchestration]
+        I --> L[Response Adapter]
+    end
+
+    subgraph "OpenAI Client Layer"
+        J --> M[CodexOpenAIClient]
+        J --> N[AsyncCodexOpenAIClient]
+        M --> O[Custom Auth Headers]
+        N --> O
+        O --> P[Token Provider Pattern]
+    end
+
+    subgraph "Response Processing"
+        L --> Q[Response Adapter]
+        Q --> R[OpenAI Typed Models]
+        Q --> S[SSE Processing]
+        Q --> T[Fallback Mechanisms]
     end
 
     subgraph "External APIs"
-        K --> M[ChatGPT Backend API]
-        H --> N[OpenAI Auth API]
-        O[GitHub API] --> P[Codex Instructions]
+        M --> U[ChatGPT Backend API]
+        N --> U
+        H --> V[OpenAI Auth API]
+        W[GitHub API] --> X[Codex Instructions]
     end
 
     subgraph "Data Flow"
-        Q[Model Normalization] --> J
-        R[Prompt Derivation] --> J
-        S[Tool Bridge Logic] --> J
-        T[Reasoning Config] --> J
+        Y[Model Normalization] --> K
+        Z[Prompt Derivation] --> K
+        AA[Tool Bridge Logic] --> K
+        BB[Reasoning Config] --> K
     end
 
     style A fill:#e1f5fe
@@ -42,6 +58,8 @@ graph TB
     style I fill:#e8f5e8
     style M fill:#fff3e0
     style N fill:#fff3e0
+    style U fill:#fff3e0
+    style V fill:#fff3e0
 ```
 
 ## Component Overview
@@ -78,7 +96,54 @@ sequenceDiagram
     end
 ```
 
-### 2. Core Provider (`provider.py`)
+### 2. OpenAI Client Integration (`openai_client.py`)
+
+The OpenAI client layer provides Codex-specific customization of the official OpenAI client:
+
+#### Custom Client Architecture
+
+```mermaid
+graph TD
+    A[CodexAuthProvider] --> B[CodexOpenAIClient]
+    A --> C[AsyncCodexOpenAIClient]
+
+    B --> D[_BaseCodexClient]
+    C --> E[AsyncOpenAI]
+
+    D --> F[Custom Auth Headers]
+    E --> G[Custom Auth Headers]
+
+    F --> H[Token Provider]
+    G --> H
+    H --> I[Account ID Provider]
+
+    D --> J[Header Injection]
+    E --> J
+    J --> K[OpenAI Beta Headers]
+    J --> L[Content-Type Headers]
+    J --> M[Accept Headers]
+```
+
+#### Key Customizations
+
+1. **Token Provider Pattern**: Dynamic token retrieval from provider
+2. **Custom Header Injection**: Codex-specific headers added to all requests
+3. **Account ID Resolution**: Automatic ChatGPT account ID injection
+4. **Beta Feature Headers**: Required OpenAI beta headers for Codex API
+
+```python
+# Custom header injection example
+headers = httpx.Headers(prepared.headers or {})
+headers["Authorization"] = f"Bearer {token}"
+headers.setdefault("OpenAI-Beta", "responses=experimental")
+headers.setdefault("originator", "codex_cli_rs")
+headers.setdefault("Content-Type", "application/json")
+headers["Accept"] = "text/event-stream"
+if account_id:
+    headers.setdefault("chatgpt-account-id", account_id)
+```
+
+### 3. Core Provider (`provider.py`)
 
 The `CodexAuthProvider` class orchestrates the entire request/response pipeline:
 
@@ -89,31 +154,81 @@ sequenceDiagram
     participant C as Client
     participant P as CodexAuthProvider
     participant M as Model Mapper
-    participant R as Request Builder
-    participant H as HTTP Client
-    participant T as Response Transformer
+    participant O as OpenAI Client
+    participant A as Response Adapter
 
     C->>P: completion(model, messages, **kwargs)
     P->>M: normalize_model(model)
-    P->>R: build_payload(model, messages, ...)
-    R->>R: derive_instructions()
-    R->>R: apply_reasoning_config()
-    P->>H: POST /codex/responses()
-    H-->>P: HTTP Response
-    P->>T: transform_response()
-    T-->>P: ModelResponse
+    P->>P: derive_instructions()
+    P->>P: apply_reasoning_config()
+    P->>O: responses.create()
+    O-->>P: OpenAI Response
+    P->>A: transform_response()
+    A-->>P: ModelResponse
     P-->>C: ModelResponse
 ```
 
 #### Key Responsibilities
 
 1. **Model Normalization**: Converts LiteLLM model strings to Codex-compatible identifiers
-2. **Request Building**: Constructs Codex API payloads from LiteLLM parameters
-3. **HTTP Transport**: Handles network communication with timeout and error handling
-4. **Response Transformation**: Converts Codex responses to LiteLLM format
-5. **Streaming Support**: Provides both sync and async streaming interfaces
+2. **Request Orchestration**: Coordinates between OpenAI client and response adapter
+3. **Client Delegation**: Manages sync/async OpenAI client instances
+4. **Configuration Resolution**: Handles base URL and mode detection
 
-### 3. Model Mapping (`model_map.py`)
+### 4. Response Adapter (`adapter.py`)
+
+The response adapter provides pure functions for transforming Codex responses to LiteLLM format:
+
+#### Response Transformation Pipeline
+
+```mermaid
+graph TD
+    A[OpenAI Response] --> B[Parse Response Body]
+    B --> C{Response Type?}
+    C -->|SSE| D[Convert SSE to JSON]
+    C -->|JSON| E[Direct Parse]
+    C -->|Typed| F[OpenAI Typed Models]
+
+    D --> G[Extract Response Payload]
+    E --> G
+    F --> G
+
+    G --> H[Transform Choices]
+    H --> I[Handle Tool Calls]
+    I --> J[Resolve Content]
+    J --> K[Build Usage]
+    K --> L[Create ModelResponse]
+```
+
+#### Key Features
+
+1. **OpenAI Typed Models**: Uses official OpenAI response models for validation
+2. **SSE Processing**: Handles Server-Sent Events with fallback mechanisms
+3. **Flexible Parsing**: Multiple parsing strategies for different response formats
+4. **Tool Call Extraction**: Comprehensive tool call handling from various formats
+
+### 5. Remote Resources (`remote_resources.py`)
+
+Manages dynamic instruction fetching and caching:
+
+```mermaid
+graph TD
+    A[fetch_codex_instructions] --> B[Get Model Family]
+    B --> C[Check Cache]
+    C --> D{Cache Valid?}
+    D -->|Yes| E[Return Cached]
+    D -->|No| F[Fetch from GitHub]
+    F --> G[Parse Release]
+    G --> H[Download Instructions]
+    H --> I[Update Cache]
+    I --> E
+
+    C --> J[Load Metadata]
+    J --> K[Check TTL]
+    K --> L[ETag Support]
+```
+
+### 6. Model Mapping (`model_map.py`)
 
 Handles intelligent model name normalization and alias resolution:
 
@@ -132,43 +247,6 @@ graph LR
     K --> L[gpt-5.1-codex]
 ```
 
-### 4. Prompt Management (`prompts.py`)
-
-Manages dynamic instruction fetching and caching:
-
-```mermaid
-graph TD
-    A[derive_instructions] --> B{Codex Mode?}
-    B -->|Yes| C[get_codex_instructions]
-    B -->|No| D[TOOL_REMAP_PROMPT]
-
-    C --> E{Cached?}
-    E -->|Yes| F[Return cached]
-    E -->|No| G[Fetch from GitHub]
-    G --> H[Cache result]
-    H --> F
-
-    D --> I[Filter system prompts]
-    C --> I
-    I --> J[Build final instructions]
-    J --> K[Return instructions + messages]
-```
-
-### 5. Reasoning Configuration (`reasoning.py`)
-
-Applies model-specific reasoning constraints and effort clamping:
-
-```mermaid
-graph TD
-    A[apply_reasoning_config] --> B[Extract effort from model]
-    B --> C[Extract effort from params]
-    C --> D[Determine final effort]
-    D --> E[Get model family]
-    E --> F[Clamp effort for family]
-    F --> G[Apply verbosity settings]
-    G --> H[Return config dict]
-```
-
 ## Data Flow Architecture
 
 ### Request Pipeline
@@ -181,27 +259,33 @@ flowchart TD
     D --> E[Parameter Validation]
     E --> F[Instruction Derivation]
     F --> G[Payload Construction]
-    G --> H[Header Building]
-    H --> I[HTTP Request]
-    I --> J[Response Processing]
-    J --> K[Response Transformation]
-    K --> L[LiteLLM Response]
+    G --> H[OpenAI Client Delegation]
+    H --> I[Custom Header Injection]
+    I --> J[HTTP Request]
+    J --> K[Response Processing]
+    K --> L[Response Transformation]
+    L --> M[LiteLLM Response]
 ```
 
 ### Response Transformation Pipeline
 
 ```mermaid
 flowchart TD
-    A[Codex Response] --> B[Parse JSON]
-    B --> C{Response Type?}
-    C -->|SSE| D[Extract final event]
-    C -->|JSON| E[Direct parse]
-    D --> F[Extract choices]
-    E --> F
-    F --> G[Transform messages]
-    G --> H[Handle tool calls]
-    H --> I[Build usage stats]
-    I --> J[Create ModelResponse]
+    A[OpenAI Response] --> B[Response Body Parsing]
+    B --> C{Format Detection}
+    C -->|SSE| D[SSE to JSON Conversion]
+    C -->|JSON| E[Direct JSON Parse]
+    C -->|Typed| F[OpenAI Model Validation]
+
+    D --> G[Extract Response Payload]
+    E --> G
+    F --> G
+
+    G --> H[Choice Processing]
+    H --> I[Tool Call Extraction]
+    I --> J[Message Content Resolution]
+    J --> K[Usage Statistics]
+    K --> L[ModelResponse Construction]
 ```
 
 ## Security Architecture
@@ -211,30 +295,38 @@ flowchart TD
 ```mermaid
 graph TD
     A[~/.codex/auth.json] --> B[Encrypted Storage]
-    B --> C[Memory Caching]
-    C --> D[HTTP Authorization Header]
-    D --> E[ChatGPT Backend]
+    B --> C[Token Provider Pattern]
+    C --> D[Dynamic Token Retrieval]
+    D --> E[Custom Header Injection]
+    E --> F[OpenAI Client]
+    F --> G[ChatGPT Backend]
 
-    F[Token Refresh] --> G[OpenAI OAuth API]
-    G --> H[New Token]
-    H --> I[Update auth.json]
-    I --> J[Clear Memory Cache]
+    H[Token Refresh] --> I[OpenAI OAuth API]
+    I --> J[New Token]
+    J --> K[Update auth.json]
+    K --> L[Clear Memory Cache]
 ```
 
-### Error Handling Strategy
+### Authentication Flow
 
 ```mermaid
-graph TD
-    A[Network Error] --> B[HTTP Status Check]
-    B -->|4xx| C[Client Error Mapping]
-    B -->|5xx| D[Server Error Mapping]
-    C --> E[RuntimeError with details]
-    D --> E
-    F[Auth Error] --> G[Specific Exception Types]
-    G --> H[Token Refresh Attempt]
-    H --> I{Fresh Token?}
-    I -->|Yes| J[Retry Request]
-    I -->|No| K[Raise Auth Error]
+sequenceDiagram
+    participant P as Provider
+    participant O as OpenAI Client
+    participant T as Token Provider
+    participant A as Account ID Provider
+    participant H as HTTP Headers
+
+    P->>O: responses.create()
+    O->>T: get_bearer_token()
+    T-->>O: access_token
+    O->>A: get_account_id()
+    A-->>O: account_id
+    O->>H: inject_custom_headers()
+    H->>H: Authorization: Bearer {token}
+    H->>H: chatgpt-account-id: {account_id}
+    H->>H: OpenAI-Beta: responses=experimental
+    O->>Backend: POST /codex/responses
 ```
 
 ## Configuration Architecture
@@ -246,22 +338,36 @@ graph LR
     A[CODEX_AUTH_FILE] --> B[Auth File Path]
     C[CODEX_CACHE_DIR] --> D[Cache Directory]
     E[CODEX_MODE] --> F[Feature Flags]
+    G[CODEX_DEBUG] --> H[Debug Logging]
 
-    B --> G[AuthContext Loading]
-    D --> H[Instruction Caching]
-    F --> I[Tool Bridge Logic]
+    B --> I[AuthContext Loading]
+    D --> J[Instruction Caching]
+    F --> K[Tool Bridge Logic]
+    H --> L[Logging Configuration]
 ```
 
-### Model Configuration
+### Client Configuration
 
 ```mermaid
 graph TD
-    A[Model String] --> B[Prefix Detection]
-    B --> C[Alias Resolution]
-    C --> D[Effort Extraction]
-    D --> E[Family Classification]
-    E --> F[Normalization Rules]
-    F --> G[Final Model ID]
+    A[CodexAuthProvider] --> B[Initialize Clients]
+    B --> C[CodexOpenAIClient]
+    B --> D[AsyncCodexOpenAIClient]
+
+    C --> E[Token Provider]
+    C --> F[Account ID Provider]
+    C --> G[Base URL]
+    C --> H[Timeout]
+
+    D --> E
+    D --> F
+    D --> G
+    D --> H
+
+    E --> I[get_bearer_token]
+    F --> J[_resolve_account_id]
+    G --> K[_resolve_base_url]
+    H --> L[60.0 seconds]
 ```
 
 ## Performance Considerations
@@ -269,20 +375,50 @@ graph TD
 ### Caching Strategy
 
 1. **Token Caching**: In-memory cache with 5-minute buffer
-2. **Instruction Caching**: File-based cache with 15-minute TTL
+2. **Instruction Caching**: File-based cache with 15-minute TTL and ETag support
 3. **Model Mapping**: Static dictionary lookup (O(1))
 
-### Network Optimization
+### Client Optimization
 
-1. **Connection Pooling**: httpx client reuse
+1. **Connection Reuse**: OpenAI client manages connection pooling
 2. **Timeout Management**: 60s request timeout, 20s GitHub timeout
-3. **Retry Logic**: Automatic token refresh on auth failures
+3. **Async Support**: Full async/await support for concurrent requests
+
+### Response Processing
+
+1. **Typed Model Validation**: OpenAI typed models for reliable parsing
+2. **Fallback Mechanisms**: Multiple parsing strategies for robustness
+3. **Efficient Transformation**: Pure functions for predictable performance
 
 ## Extension Points
 
-### Custom Model Support
+### Custom OpenAI Client
 
-The system supports custom model additions through the `MODEL_MAP` in `model_map.py`:
+Extend the OpenAI client customization:
+
+```python
+class CustomCodexClient(CodexOpenAIClient):
+    def _prepare_options(self, options: FinalRequestOptions) -> FinalRequestOptions:
+        prepared = super()._prepare_options(options)
+        # Add custom headers or modifications
+        headers = httpx.Headers(prepared.headers or {})
+        headers["Custom-Header"] = "custom-value"
+        return prepared.copy(update={"headers": headers})
+```
+
+### Custom Response Adapter
+
+Override response transformation:
+
+```python
+def custom_transform_response(openai_response: dict[str, Any], model: str) -> ModelResponse:
+    # Custom transformation logic
+    return transform_response(openai_response, model)
+```
+
+### Custom Model Mapping
+
+Extend model normalization:
 
 ```python
 # Add custom model aliases
@@ -292,22 +428,21 @@ alias_bases = {
 }
 ```
 
-### Custom Prompt Logic
+## Migration from Previous Architecture
 
-Extend `derive_instructions()` in `prompts.py` to add custom instruction logic:
+### Key Changes
 
-```python
-def derive_instructions(messages, *, codex_mode, normalized_model):
-    # Custom logic here
-    return instructions, filtered_messages
-```
+1. **HTTP Transport**: Replaced direct httpx with OpenAI client library
+2. **Response Handling**: Extracted to separate adapter module
+3. **Authentication**: Token provider pattern for dynamic token retrieval
+4. **Error Handling**: OpenAI typed models with comprehensive fallbacks
+5. **Simplification**: Removed Cloudflare workarounds and browser emulation
 
-### Custom Response Transformation
+### Benefits
 
-Override or extend `_transform_response()` in `provider.py` for custom response handling:
+1. **Better Reliability**: Official OpenAI client with proven stability
+2. **Improved Maintainability**: Clear separation of concerns
+3. **Enhanced Testability**: Pure functions and dependency injection
+4. **Future Compatibility**: Aligned with OpenAI ecosystem evolution
 
-```python
-def _transform_response(self, openai_response: dict[str, Any], model: str) -> ModelResponse:
-    # Custom transformation logic
-    return transformed_response
-```
+This architecture provides a robust, maintainable, and extensible foundation for integrating Codex authentication with OpenAI-compatible APIs while maintaining full compatibility with the LiteLLM ecosystem.

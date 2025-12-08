@@ -1,6 +1,6 @@
 # Usage Examples
 
-This document provides comprehensive usage examples for the LiteLLM Codex OAuth Provider, covering basic usage, advanced patterns, and integration scenarios.
+This document provides comprehensive usage examples for the LiteLLM Codex OAuth Provider with the new OpenAI client architecture, covering basic usage, advanced patterns, and integration scenarios.
 
 ## Quick Start
 
@@ -9,7 +9,7 @@ This document provides comprehensive usage examples for the LiteLLM Codex OAuth 
 ```python
 from litellm_codex_oauth_provider import CodexAuthProvider
 
-# Initialize the provider
+# Initialize the provider (automatically sets up OpenAI clients)
 provider = CodexAuthProvider()
 
 # Make a simple completion request
@@ -43,7 +43,7 @@ response = litellm.completion(
 
 ### Use Case 1: Code Generation with Tools
 
-This example demonstrates using the provider with function calling for enhanced code generation.
+This example demonstrates using the provider with function calling for enhanced code generation using the new OpenAI client architecture.
 
 ```python
 from litellm_codex_oauth_provider import CodexAuthProvider
@@ -99,7 +99,7 @@ response = provider.completion(
     ],
     tools=tools,
     tool_choice="auto",
-    temperature=0.3
+    metadata={"source": "code_generation"}
 )
 
 print("Response:", response.choices[0].message.content)
@@ -122,7 +122,7 @@ if response.choices[0].message.tool_calls:
 
 ### Use Case 2: Streaming Code Review
 
-This example shows how to use streaming for interactive code review.
+This example shows how to use streaming for interactive code review with the new architecture.
 
 ```python
 from litellm_codex_oauth_provider import CodexAuthProvider
@@ -150,8 +150,7 @@ stream = provider.streaming(
             "content": f"Please review this Python code:\n\n```{code_to_review}```\n\nProvide suggestions for improvement."
         }
     ],
-    temperature=0.2,
-    max_output_tokens=1000
+    metadata={"review_type": "performance"}
 )
 
 print("Code Review (streaming):")
@@ -165,12 +164,11 @@ for chunk in stream:
         full_response += chunk.text
 
 print("\n" + "-" * 50)
-print(f"Total tokens: {stream.response.usage.total_tokens}")
 ```
 
 ### Use Case 3: Async Batch Processing
 
-This example demonstrates async usage for processing multiple requests concurrently.
+This example demonstrates async usage for processing multiple requests concurrently with the new OpenAI client.
 
 ```python
 import asyncio
@@ -183,8 +181,7 @@ async def process_single_request(prompt: str, model: str = "codex/gpt-5.1-codex"
     response = await provider.acompletion(
         model=model,
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.7,
-        max_tokens=500
+        metadata={"batch_item": True}
     )
     return {
         "prompt": prompt,
@@ -232,7 +229,7 @@ if __name__ == "__main__":
 
 ### Use Case 4: Custom Model Configuration
 
-This example shows how to use different model configurations for various tasks.
+This example shows how to use different model configurations for various tasks with the new parameter filtering.
 
 ```python
 from litellm_codex_oauth_provider import CodexAuthProvider
@@ -243,26 +240,23 @@ provider = CodexAuthProvider()
 model_configs = {
     "creative_writing": {
         "model": "codex/gpt-5.1-codex-max",
-        "temperature": 0.9,
-        "max_tokens": 2000,
-        "top_p": 0.95
+        "metadata": {"task_type": "creative"},
+        "user": "writer_user"
     },
     "code_generation": {
         "model": "codex/gpt-5.1-codex-max",
-        "temperature": 0.3,
-        "max_tokens": 1500,
-        "frequency_penalty": 0.1
+        "metadata": {"task_type": "coding"},
+        "user": "developer_user"
     },
     "analysis": {
         "model": "codex/gpt-5.1-codex",
-        "temperature": 0.2,
-        "max_tokens": 1000,
-        "presence_penalty": 0.1
+        "metadata": {"task_type": "analysis"},
+        "user": "analyst_user"
     },
     "efficient": {
         "model": "codex/gpt-5.1-codex-mini",
-        "temperature": 0.5,
-        "max_tokens": 800
+        "metadata": {"task_type": "efficient"},
+        "user": "quick_user"
     }
 }
 
@@ -300,7 +294,7 @@ for task_type, prompt in examples:
 
 ### Use Case 5: Error Handling and Retry Logic
 
-This example demonstrates robust error handling and retry mechanisms.
+This example demonstrates robust error handling and retry mechanisms with the new architecture.
 
 ```python
 import time
@@ -322,7 +316,7 @@ def make_request_with_retry(prompt: str, max_retries: int = 3, base_delay: float
             response = provider.completion(
                 model="codex/gpt-5.1-codex",
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.7
+                metadata={"retry_attempt": attempt}
             )
             return response
 
@@ -435,7 +429,7 @@ if __name__ == "__main__":
 
 ### Use Case 6: Integration with LiteLLM Proxy
 
-This example shows how to integrate with LiteLLM proxy for production use.
+This example shows how to integrate with LiteLLM proxy for production use with the new architecture.
 
 ```python
 # client_example.py - Example client for LiteLLM proxy
@@ -463,8 +457,7 @@ def chat_completion_example():
                 "content": "Write a Python function to parse JSON data safely"
             }
         ],
-        temperature=0.3,
-        max_tokens=1000
+        metadata={"client": "example", "version": "1.0"}
     )
 
     return response
@@ -478,7 +471,7 @@ def streaming_example():
             {"role": "user", "content": "Explain async/await in Python with examples"}
         ],
         stream=True,
-        temperature=0.7
+        metadata={"streaming": True}
     )
 
     print("Streaming response:")
@@ -541,22 +534,23 @@ if __name__ == "__main__":
 
 ```python
 from litellm_codex_oauth_provider import CodexAuthProvider
+from litellm_codex_oauth_provider.adapter import transform_response
 from litellm import ModelResponse
 
 class CustomCodexProvider(CodexAuthProvider):
     """Extended provider with custom response processing."""
 
-    def _transform_response(self, openai_response: dict[str, Any], model: str) -> ModelResponse:
-        """Custom response transformation with additional processing."""
+    def completion(self, model: str, messages: list[dict[str, Any]], **kwargs: Any) -> ModelResponse:
+        """Override completion with custom processing."""
 
-        # Call parent transformation
-        response = super()._transform_response(openai_response, model)
+        # Call parent completion
+        response = super().completion(model, messages, **kwargs)
 
         # Add custom processing
         if response.choices:
             choice = response.choices[0]
 
-            # Add metadata
+            # Add custom metadata
             response.system_fingerprint = f"custom-{response.system_fingerprint}"
 
             # Process content
@@ -701,15 +695,21 @@ response = provider.completion(
 )
 ```
 
-### 4. Token Management
+### 4. Parameter Usage
 
 ```python
-# Set appropriate max_tokens
+# Use supported parameters (these are passed through)
 response = provider.completion(
     model="codex/gpt-5.1-codex",
     messages=[{"role": "user", "content": "Brief summary"}],
-    max_tokens=200  # Don't request more than needed
+    metadata={"source": "example"},  # Supported
+    user="user123",  # Supported
+    tool_choice="auto",  # Supported
+    parallel_tool_calls=False  # Supported
 )
+
+# Unsupported parameters are automatically filtered out:
+# temperature, max_tokens, top_p, etc. are removed to prevent 400 errors
 ```
 
 ## Troubleshooting
@@ -737,7 +737,22 @@ response = provider.completion(
 )
 ```
 
-#### 3. Rate Limiting
+#### 3. Parameter Errors
+
+```python
+# Error: 400 Bad Request
+# Solution: Use supported parameters only
+response = provider.completion(
+    model="codex/gpt-5.1-codex",
+    messages=[{"role": "user", "content": "Hello"}],
+    metadata={"key": "value"},  # Supported
+    user="user123"  # Supported
+    # temperature=0.7,  # Unsupported - will be filtered out
+    # max_tokens=100,   # Unsupported - will be filtered out
+)
+```
+
+#### 4. Rate Limiting
 
 ```python
 # Error: 429 Too Many Requests
@@ -757,7 +772,7 @@ def retry_with_backoff(func, max_retries=3):
             raise
 ```
 
-#### 4. Network Issues
+#### 5. Network Issues
 
 ```python
 # Handle network timeouts and errors
@@ -770,4 +785,22 @@ except RuntimeError as e:
         print("Network connection issue")
     else:
         print(f"Network error: {e}")
+```
+
+### Debug Mode
+
+Enable debug logging to troubleshoot issues:
+
+```python
+import os
+os.environ["CODEX_DEBUG"] = "1"
+
+from litellm_codex_oauth_provider import CodexAuthProvider
+
+provider = CodexAuthProvider()
+# Now you'll see detailed debug logs
+response = provider.completion(
+    model="codex/gpt-5.1-codex",
+    messages=[{"role": "user", "content": "Hello"}]
+)
 ```
