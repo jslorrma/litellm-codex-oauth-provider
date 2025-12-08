@@ -1,0 +1,153 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - '**'
+
+jobs:
+  lint:
+    name: Lint and format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pixi
+        uses: prefix-dev/setup-pixi@v0.8.10
+        with:
+          environments: lint
+          locked: false
+
+      - name: Ruff check
+        run: pixi run -e lint lint
+
+      - name: Ruff format (verify)
+        run: pixi run -e lint format
+
+  test:
+    name: Tests with coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pixi
+        uses: prefix-dev/setup-pixi@v0.8.10
+        with:
+          environments: test
+          locked: false
+
+      - name: Run tests
+        run: pixi run -e test test-with-coverage
+
+      - name: Upload coverage and reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            coverage.xml
+            test-results.xml
+            htmlcov/
+
+  version-check:
+    name: Detect version bump
+    runs-on: ubuntu-latest
+    outputs:
+      version-changed: ${{ steps.version-metadata.outputs.changed }}
+      new-version: ${{ steps.version-metadata.outputs.newVersion }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pixi
+        uses: prefix-dev/setup-pixi@v0.8.10
+        with:
+          environments: build
+          locked: false
+
+      - name: Get current version
+        id: get-version
+        run: |
+          echo "current_version=$(pixi run -e build get-version)" >> "$GITHUB_ENV"
+
+      - name: Get previous version from TestPyPI
+        id: get-previous-version
+        run: |
+          package_name=$(grep -Po '(?<=^name = \")[^\"]*' pyproject.toml)
+          previous_version=$(curl -sf https://test.pypi.org/pypi/$package_name/json \
+            | jq -r '.releases | keys | .[-1]')
+          if [ "$previous_version" = "null" ] || [ -z "$previous_version" ]; then
+            previous_version="0.0.0"
+          fi
+          echo "previous_version=$previous_version" >> "$GITHUB_ENV"
+
+      - name: Compare versions
+        id: version-metadata
+        run: |
+          if [ "$current_version" != "$previous_version" ]; then
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+              echo "newVersion=$current_version" >> "$GITHUB_OUTPUT"
+          else
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build package
+    runs-on: ubuntu-latest
+    needs: version-check
+    if: needs.version-check.outputs.version-changed == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pixi
+        uses: prefix-dev/setup-pixi@v0.8.10
+        with:
+          environments: build
+          locked: false
+
+      - name: Build
+        run: pixi run -e build build
+
+      - name: Upload dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+  publish-to-testpypi:
+    name: Publish to TestPyPI
+    needs:
+      - lint
+      - test
+      - version-check
+      - build
+    runs-on: ubuntu-latest
+    # Only publish from main branch, not from PRs
+    if: |
+      needs.version-check.outputs.version-changed == 'true' &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main'
+
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/litellm-codex-oauth-provider
+
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download dist
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
