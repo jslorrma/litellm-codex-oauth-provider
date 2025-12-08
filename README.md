@@ -188,7 +188,7 @@ This project uses `pixi` to manage a consistent development environment. To set 
 1. **Clone the repository:**
 
    ```bash
-   git clone <your-repository-url>
+   git clone https://github.com/jslorrma/litellm-codex-oauth-provider.git
    cd litellm-codex-oauth-provider
    ```
 
