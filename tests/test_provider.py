@@ -6,7 +6,6 @@ import asyncio
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
-import httpx
 import pytest
 from litellm import Choices, Message, ModelResponse
 
@@ -74,7 +73,7 @@ def mock_openai_response() -> dict:
 def test_provider_init(provider: CodexAuthProvider) -> None:
     """Given a new provider, when constructed, then base URL and caches are initialized."""
     assert isinstance(provider, CodexAuthProvider)
-    assert provider.base_url == constants.CODEX_API_BASE_URL
+    assert provider.base_url == f"{constants.CODEX_API_BASE_URL.rstrip('/')}/codex"
     assert provider.cached_token is None
     assert provider.token_expiry is None
     assert provider._codex_mode_enabled is True  # noqa: SLF001
@@ -140,13 +139,9 @@ def test_completion_success(
         "litellm_codex_oauth_provider.provider.get_auth_context",
         return_value=AuthContext(access_token="test.token", account_id="acct-1"),
     )
-    response = httpx.Response(
-        status_code=200,
-        json=mock_openai_response,
-        request=httpx.Request("POST", "https://chatgpt.com/backend-api/codex/responses"),
-        headers={"content-type": "application/json"},
+    dispatch_spy = mocker.patch.object(
+        provider, "_dispatch_response_request", return_value=mock_openai_response
     )
-    post_spy = mocker.patch.object(provider, "_post_request", return_value=response)
 
     result = provider.completion(
         model="codex/gpt-5.1-codex-low",
@@ -159,8 +154,8 @@ def test_completion_success(
 
     assert isinstance(result, ModelResponse)
     assert result.choices[0].message.content == "Hello, world!"
-    payload = post_spy.call_args.args[1]
-    headers = post_spy.call_args.args[2]
+    payload = dispatch_spy.call_args.kwargs["payload"]
+    headers = dispatch_spy.call_args.kwargs["extra_headers"]
     assert payload["model"] == "gpt-5.1-codex"
     assert payload["reasoning"]["effort"] == "low"
     assert payload["store"] is False
@@ -180,31 +175,24 @@ def test_completion_forwards_supported_kwargs(
         "litellm_codex_oauth_provider.provider.get_auth_context",
         return_value=AuthContext(access_token="test.token", account_id="acct-1"),
     )
-    response = httpx.Response(
-        status_code=200,
-        json=mock_openai_response,
-        request=httpx.Request("POST", "https://chatgpt.com/backend-api/codex/responses"),
-        headers={"content-type": "application/json"},
+    post_spy = mocker.patch.object(
+        provider, "_dispatch_response_request", return_value=mock_openai_response
     )
-    post_spy = mocker.patch.object(provider, "_post_request", return_value=response)
 
-    temperature = 0.3
-    max_output_tokens = 77
     provider.completion(
         model="codex/gpt-5.1-codex-max",
         messages=[{"role": "user", "content": "Hello"}],
-        temperature=temperature,
-        max_tokens=max_output_tokens,
+        temperature=0.3,
+        max_tokens=77,
         metadata={"source": "unit-test"},
         logging_obj="skip-me",
         reasoning_effort="minimal",
         verbosity="high",
     )
 
-    payload = post_spy.call_args.args[1]
-    assert payload["temperature"] == temperature
-    assert payload["max_output_tokens"] == max_output_tokens
-    assert "max_tokens" not in payload
+    payload = post_spy.call_args.kwargs["payload"]
+    assert "temperature" not in payload  # Codex endpoint rejects temperature
+    assert "max_output_tokens" not in payload  # Codex responses rejects this param
     assert payload["metadata"] == {"source": "unit-test"}
     assert "logging_obj" not in payload
     assert "reasoning_effort" not in payload
@@ -221,13 +209,9 @@ def test_completion_prepends_bridge_when_tools_present(
         "litellm_codex_oauth_provider.provider.get_auth_context",
         return_value=AuthContext(access_token="test.token", account_id="acct-1"),
     )
-    response = httpx.Response(
-        status_code=200,
-        json=mock_openai_response,
-        request=httpx.Request("POST", "https://chatgpt.com/backend-api/codex/responses"),
-        headers={"content-type": "application/json"},
+    post_spy = mocker.patch.object(
+        provider, "_dispatch_response_request", return_value=mock_openai_response
     )
-    post_spy = mocker.patch.object(provider, "_post_request", return_value=response)
     tools = [
         {
             "type": "function",
@@ -247,7 +231,7 @@ def test_completion_prepends_bridge_when_tools_present(
         parallel_tool_calls=False,
     )
 
-    payload = post_spy.call_args.args[1]
+    payload = post_spy.call_args.kwargs["payload"]
     normalized_tool = payload["tools"][0]
     assert normalized_tool["name"] == "bash"
     assert normalized_tool["description"] == "Run a bash command"
@@ -296,19 +280,15 @@ def test_completion_does_not_add_bridge_without_tools(
         "litellm_codex_oauth_provider.provider.get_auth_context",
         return_value=AuthContext(access_token="test.token", account_id="acct-1"),
     )
-    response = httpx.Response(
-        status_code=200,
-        json=mock_openai_response,
-        request=httpx.Request("POST", "https://chatgpt.com/backend-api/codex/responses"),
-        headers={"content-type": "application/json"},
+    post_spy = mocker.patch.object(
+        provider, "_dispatch_response_request", return_value=mock_openai_response
     )
-    post_spy = mocker.patch.object(provider, "_post_request", return_value=response)
 
     provider.completion(
         model="codex/gpt-5.1-codex-max", messages=[{"role": "user", "content": "Hello"}]
     )
 
-    payload = post_spy.call_args.args[1]
+    payload = post_spy.call_args.kwargs["payload"]
     input_messages = payload["input"]
     assert input_messages[0]["role"] == "user"
     assert not any(msg.get("role") == "developer" for msg in input_messages)
@@ -320,7 +300,11 @@ def test_completion_http_error(mocker: MockerFixture, provider: CodexAuthProvide
         "litellm_codex_oauth_provider.provider.get_auth_context",
         return_value=AuthContext(access_token="test.token", account_id="acct-1"),
     )
-    mocker.patch.object(provider, "_post_request", side_effect=RuntimeError("Codex API error 401"))
+    mocker.patch.object(
+        provider,
+        "_dispatch_response_request",
+        side_effect=RuntimeError("Codex API error 401"),
+    )
 
     with pytest.raises(RuntimeError, match="Codex API error 401"):
         provider.completion(
@@ -338,13 +322,9 @@ def test_acompletion_success(
         "litellm_codex_oauth_provider.provider.get_auth_context",
         return_value=AuthContext(access_token="test.token", account_id="acct-1"),
     )
-    response = httpx.Response(
-        status_code=200,
-        json=mock_openai_response,
-        request=httpx.Request("POST", "https://chatgpt.com/backend-api/codex/responses"),
-        headers={"content-type": "application/json"},
+    mocker.patch.object(
+        provider, "_dispatch_response_request_async", return_value=mock_openai_response
     )
-    mocker.patch.object(provider, "_post_request_async", return_value=response)
 
     result = asyncio.run(
         provider.acompletion(

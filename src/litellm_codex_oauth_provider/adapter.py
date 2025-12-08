@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from litellm import Choices, Message, ModelResponse
 from litellm.types.utils import GenericStreamingChunk, Usage
+from openai.types.responses import Response, ResponseStreamEvent
 
 if TYPE_CHECKING:
     import httpx
+
+
+logger = logging.getLogger(__name__)
 
 
 def parse_response_body(response: httpx.Response) -> dict[str, Any]:
@@ -24,9 +29,25 @@ def parse_response_body(response: httpx.Response) -> dict[str, Any]:
             return parsed
         raise RuntimeError("Codex API returned stream without final response event")
     try:
-        return response.json()
+        # Use OpenAI's typed Response model for strict schema validation and parsing.
+        # If this fails (e.g., due to schema mismatch or unexpected fields), fall back to raw JSON parsing below.
+        return Response.model_validate_json(response.content).model_dump()
     except json.JSONDecodeError as exc:
         raise RuntimeError("Codex API returned invalid JSON") from exc
+    except Exception as exc:
+        logger.debug(
+            "OpenAI typed response validation failed; falling back to raw JSON",
+            extra={
+                "status_code": response.status_code,
+                "headers": dict(response.headers),
+                "error": str(exc),
+            },
+        )
+        try:
+            # Fallback: parse raw JSON if typed model validation fails
+            return response.json()
+        except Exception as json_exc:
+            raise RuntimeError("Codex API response could not be parsed as JSON") from json_exc
 
 
 def convert_sse_to_json(payload: str) -> dict[str, Any]:
@@ -44,6 +65,10 @@ def convert_sse_to_json(payload: str) -> dict[str, Any]:
             continue
         if isinstance(event, Mapping):
             events.append(event)
+
+    validated = _extract_validated_response_from_events(events)
+    if validated:
+        return validated
 
     return _extract_response_from_events(events)
 
@@ -71,6 +96,7 @@ def transform_response(openai_response: dict[str, Any], model: str) -> ModelResp
         "system_fingerprint"
     )
     finish_reason = _resolve_finish_reason(primary_choice, tool_calls)
+    created = response_payload.get("created") or response_payload.get("created_at")
 
     return ModelResponse(
         id=response_payload.get("id") or openai_response.get("id", ""),
@@ -86,7 +112,7 @@ def transform_response(openai_response: dict[str, Any], model: str) -> ModelResp
                 ),
             )
         ],
-        created=response_payload.get("created", int(time.time())),
+        created=int(created or time.time()),
         model=response_payload.get("model", model),
         object=response_payload.get("object", "chat.completion"),
         system_fingerprint=system_fingerprint,
@@ -118,7 +144,11 @@ def build_streaming_chunk(response: ModelResponse) -> GenericStreamingChunk:
 
 
 def _extract_response_from_events(events: list[dict[str, Any]]) -> dict[str, Any]:
-    """Return the final response payload from parsed SSE events."""
+    """Return the final response payload from parsed SSE events.
+
+    This is a best-effort extraction without strict schema validation. Used as a fallback
+    when typed model validation fails or is not possible.
+    """
     for event in reversed(events):
         if event.get("type") in {"response.done", "response.completed"}:
             response_payload = event.get("response") or event.get("data")
@@ -132,6 +162,44 @@ def _extract_response_from_events(events: list[dict[str, Any]]) -> dict[str, Any
         if isinstance(last, Mapping):
             return dict(last)
     return {}
+
+
+def _extract_validated_response_from_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Validate SSE events using OpenAI typed models.
+
+    Return the first successfully validated response payload, or None if none validate.
+    """
+    validation_errors: list[str] = []
+    validated_response: dict[str, Any] | None = None
+    for event in reversed(events):
+        try:
+            typed_event = ResponseStreamEvent.model_validate(event)
+        except Exception as exc:
+            if logger.isEnabledFor(logging.DEBUG):
+                validation_errors.append(f"event-parse: {exc}")
+            continue
+        response_payload = getattr(typed_event, "response", None)
+        if response_payload is None:
+            continue
+        try:
+            validated_response = Response.model_validate(response_payload).model_dump()
+            break
+        except Exception as exc:
+            if logger.isEnabledFor(logging.DEBUG):
+                validation_errors.append(f"response-validate: {exc}")
+            continue
+
+    if validation_errors and logger.isEnabledFor(logging.DEBUG):
+        error_summary_limit = 5
+        # Log a single summary line to avoid per-event noise.
+        logger.debug(
+            "Failed to validate response stream events; falling back to raw extraction",
+            extra={
+                "errors": validation_errors[:error_summary_limit],
+                "errors_truncated": len(validation_errors) > error_summary_limit,
+            },
+        )
+    return validated_response
 
 
 def _build_usage(usage: Mapping[str, Any] | None) -> Usage:
