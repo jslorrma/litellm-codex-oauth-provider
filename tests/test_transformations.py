@@ -3,11 +3,7 @@
 from __future__ import annotations
 
 from litellm_codex_oauth_provider.model_map import normalize_model
-from litellm_codex_oauth_provider.prompts import (
-    TOOL_REMAP_PROMPT,
-    _to_codex_input,
-    derive_instructions,
-)
+from litellm_codex_oauth_provider.prompts import _to_codex_input, derive_instructions
 from litellm_codex_oauth_provider.reasoning import apply_reasoning_config
 
 
@@ -42,31 +38,18 @@ def test_reasoning_config_rewrites_minimal_for_codex() -> None:
 
 
 def test_derive_instructions_filters_legacy_toolchain_prompts() -> None:
-    """Given legacy toolchain prompts in Codex mode, then Codex instructions are used."""
+    """Given legacy toolchain prompts, Codex instructions are used and toolchain prompt is removed."""
     instructions, filtered_messages = derive_instructions(
         [
             {"role": "system", "content": "toolchain system prompt content"},
             {"role": "user", "content": "Ping"},
         ],
-        codex_mode=True,
         normalized_model="gpt-5.1-codex",
         instructions_text="codex instructions",
     )
 
     assert instructions == "codex instructions"
     assert "toolchain system prompt content" not in instructions
-    assert filtered_messages == [{"type": "message", "content": "Ping", "role": "user"}]
-
-
-def test_derive_instructions_tool_remap_mode() -> None:
-    """Given legacy mode, when deriving instructions, then tool remap guidance is included."""
-    instructions, filtered_messages = derive_instructions(
-        [{"role": "user", "content": "Ping"}],
-        codex_mode=False,
-        normalized_model="gpt-5.1-codex",
-    )
-
-    assert TOOL_REMAP_PROMPT.splitlines()[0] in instructions
     assert filtered_messages == [{"type": "message", "content": "Ping", "role": "user"}]
 
 

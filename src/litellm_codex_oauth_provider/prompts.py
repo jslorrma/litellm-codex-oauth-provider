@@ -1,4 +1,84 @@
-"""System prompt handling and Codex instruction derivation."""
+r"""System prompt handling and Codex instruction derivation.
+
+This module handles the conversion of OpenAI message formats to Codex input format,
+including system prompt processing, tool call normalization, and instruction derivation.
+
+The prompt system supports:
+- OpenAI to Codex message format conversion
+- System prompt filtering and instruction extraction
+- Tool call normalization and bridge prompt generation
+- Legacy toolchain prompt detection and removal
+- Function call output conversion to Codex schema
+
+Message Processing Pipeline
+---------------------------
+1. **Role-based Processing**: Handle system, user, assistant, and tool messages
+2. **Content Extraction**: Convert various content formats to text
+3. **Tool Normalization**: Convert OpenAI tool calls to Codex format
+4. **System Prompt Handling**: Extract and combine system instructions
+5. **Bridge Prompt Addition**: Add tool bridge for function calling
+
+Supported Message Types
+-----------------------
+- **System Messages**: Converted to Codex instructions
+- **User Messages**: Direct conversion to Codex messages
+- **Assistant Messages**: Preserved with content and tool calls
+- **Tool Messages**: Converted to function_call_output format
+- **Function Calls**: Normalized to Codex function_call schema
+
+Tool Call Handling
+------------------
+The module handles multiple tool call formats:
+- OpenAI format: `{"tool_calls": [{"function": {"name": "...", "arguments": "..."}}]}`
+- Legacy format: `{"function_call": {"name": "...", "arguments": "..."}}`
+- Function output: `{"function_call_output": "..."}`
+
+Examples
+--------
+Message conversion:
+
+>>> from litellm_codex_oauth_provider.prompts import _to_codex_input
+>>> openai_message = {"role": "user", "content": "Hello"}
+>>> codex_input = _to_codex_input(openai_message)
+>>> print(codex_input)
+{'type': 'message', 'content': 'Hello', 'role': 'user'}
+
+Tool call conversion:
+
+>>> tool_message = {"role": "tool", "tool_call_id": "call_123", "content": "Tool result"}
+>>> codex_input = _to_codex_input(tool_message)
+>>> print(codex_input)
+{'type': 'function_call_output', 'output': {'tool_call_id': 'call_123', 'content': 'Tool result'}, 'role': 'assistant'}
+
+Instruction derivation:
+
+>>> from litellm_codex_oauth_provider.prompts import derive_instructions
+>>> messages = [
+...     {"role": "system", "content": "You are a helpful assistant."},
+...     {"role": "user", "content": "Hello"},
+... ]
+>>> instructions, input_messages = derive_instructions(messages, normalized_model="gpt-5.1-codex")
+
+Tool bridge message:
+
+>>> from litellm_codex_oauth_provider.prompts import build_tool_bridge_message
+>>> bridge = build_tool_bridge_message()
+>>> print(bridge["content"][0]["text"][:50])
+'# Codex Tool Bridge\\n\\nYou are an open-source AI coding assistant...'
+
+Notes
+-----
+- System prompts are filtered for legacy toolchain markers
+- Tool bridge prompts are added when tools are present
+- Function calls are normalized to Codex schema
+- Content is coerced to text format for consistency
+- The module provides both individual conversion and batch derivation functions
+
+See Also
+--------
+- `provider`: Main provider using these prompt functions
+- `remote_resources`: Instruction fetching and caching
+"""
 
 from __future__ import annotations
 
@@ -15,10 +95,6 @@ LEGACY_TOOLCHAIN_MARKERS: Final[tuple[str, ...]] = (
     "toolchain::system",
     "legacy toolchain",
 )
-TOOL_REMAP_PROMPT: Final[
-    str
-] = """Tool remapping: emit tool calls using the provided OpenAI tool schema even if previous \
-instructions referenced legacy tool shims."""
 TOOL_BRIDGE_PROMPT: Final[str] = """# Codex Tool Bridge
 
 You are an open-source AI coding assistant with tool support, running behind a developer CLI. \
@@ -164,7 +240,6 @@ def _to_codex_input(message: dict[str, Any]) -> dict[str, Any]:
 def derive_instructions(
     messages: list[dict[str, Any]],
     *,
-    codex_mode: bool,
     normalized_model: str,
     instructions_text: str | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
@@ -174,12 +249,10 @@ def derive_instructions(
     ----------
     messages : list of dict
         Chat messages to adapt to the Codex schema.
-    codex_mode : bool
-        Whether Codex behaviour is enabled (Codex instructions are applied).
     normalized_model : str
         Normalized model identifier (reserved for future gating).
     instructions_text : str, optional
-        Pre-fetched Codex instructions to prepend. Ignored when ``codex_mode`` is False.
+        Pre-fetched Codex instructions to prepend.
 
     Returns
     -------
@@ -195,7 +268,7 @@ def derive_instructions(
             content = _coerce_text(message.get("content"))
             if not content:
                 continue
-            if codex_mode and _is_toolchain_system_prompt(content):
+            if _is_toolchain_system_prompt(content):
                 continue
             system_parts.append(content)
             continue
@@ -203,9 +276,7 @@ def derive_instructions(
         cleaned = _clean_message_payload(message)
         input_payload.append(_to_codex_input(cleaned))
 
-    base_instructions = instructions_text if codex_mode else TOOL_REMAP_PROMPT
-    if codex_mode and not base_instructions:
-        base_instructions = DEFAULT_INSTRUCTIONS
+    base_instructions = instructions_text or DEFAULT_INSTRUCTIONS
     instructions_parts: list[str] = [base_instructions, *system_parts]
     instructions = "\n\n".join(part for part in instructions_parts if part) or DEFAULT_INSTRUCTIONS
     return instructions, input_payload

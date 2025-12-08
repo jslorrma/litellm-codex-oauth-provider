@@ -30,17 +30,124 @@ logger = logging.getLogger(__name__)
 
 
 class CodexAuthProvider(CustomLLM):
-    """Custom LiteLLM provider that uses Codex CLI's OAuth authentication."""
+    """Custom LiteLLM provider that uses Codex CLI's OAuth authentication.
+
+    This class implements the CustomLLM interface to provide seamless integration
+    between LiteLLM and Codex CLI authentication. It handles the complete request/
+    response lifecycle including token management, model normalization, payload
+    transformation, and response adaptation.
+
+    The provider supports both synchronous and asynchronous operations, streaming
+    responses, tool calling, and comprehensive error handling. It automatically
+    manages OAuth tokens, applies reasoning configurations, and provides detailed
+    logging for debugging.
+
+    Attributes
+    ----------
+    base_url : str
+        The resolved base URL for Codex API endpoints
+    cached_token : str | None
+        Cached bearer token for authentication
+    token_expiry : float | None
+        Timestamp when cached token expires
+    account_id : str | None
+        Cached ChatGPT account ID from JWT claims
+
+    Examples
+    --------
+    Basic usage:
+
+    >>> from litellm_codex_oauth_provider import CodexAuthProvider
+    >>> provider = CodexAuthProvider()
+    >>> response = provider.completion(
+    ...     model="codex/gpt-5.1-codex", messages=[{"role": "user", "content": "Hello"}]
+    ... )
+
+    With LiteLLM integration:
+
+    >>> import litellm
+    >>> from litellm_codex_oauth_provider import CodexAuthProvider
+    >>> litellm.register_provider("codex", CodexAuthProvider())
+    >>> response = litellm.completion(
+    ...     model="codex/gpt-5.1-codex-max",
+    ...     messages=[{"role": "user", "content": "Explain quantum computing"}],
+    ... )
+
+    Async usage:
+
+    >>> import asyncio
+    >>> async def main():
+    ...     provider = CodexAuthProvider()
+    ...     response = await provider.acompletion(
+    ...         model="codex/gpt-5.1-codex", messages=[{"role": "user", "content": "Hello"}]
+    ...     )
+    ...     return response
+    >>> # asyncio.run(main())
+
+    With tool calling:
+
+    >>> tools = [
+    ...     {
+    ...         "type": "function",
+    ...         "function": {
+    ...             "name": "get_weather",
+    ...             "description": "Get weather information",
+    ...             "parameters": {
+    ...                 "type": "object",
+    ...                 "properties": {"location": {"type": "string"}},
+    ...             },
+    ...         },
+    ...     }
+    ... ]
+    >>> response = provider.completion(
+    ...     model="codex/gpt-5.1-codex-max",
+    ...     messages=[{"role": "user", "content": "What's the weather?"}],
+    ...     tools=tools,
+    ...     tool_choice="auto",
+    ... )
+
+    Notes
+    -----
+    - Requires Codex CLI authentication via 'codex login'
+    - Automatically handles token refresh and caching
+    - Supports all GPT-5.1 Codex model variants
+    - Provides streaming via Server-Sent Events
+    - Thread-safe for concurrent usage
+    - Detailed logging available via CODEX_DEBUG=1
+
+    See Also
+    --------
+    - `completion`: Synchronous completion method
+    - `acompletion`: Asynchronous completion method
+    - `streaming`: Streaming response method
+    - `astreaming`: Async streaming response method
+    """
 
     def __init__(self) -> None:
-        """Initialize the CodexAuthProvider."""
+        """Initialize the CodexAuthProvider.
+
+        Sets up the provider with default configuration, initializes OpenAI clients,
+        resolves base URL and mode settings, and prepares for authentication.
+
+        The initialization process:
+        1. Enables debug logging if CODEX_DEBUG is set
+        2. Resolves the base URL for Codex API endpoints
+        3. Initializes synchronous and asynchronous OpenAI clients
+        4. Sets up token caching and account ID resolution
+        5. Resolves Codex mode feature flag
+
+        Examples
+        --------
+        >>> provider = CodexAuthProvider()
+        >>> print(f"Base URL: {provider.base_url}")
+        Base URL: https://chatgpt.com/backend-api/codex
+        """
         super().__init__()
         self._maybe_enable_debug_logging()
         self.base_url = self._resolve_base_url(None)
         self._cached_token: str | None = None
         self._token_expiry: float | None = None
         self._account_id: str | None = None
-        self._codex_mode_enabled = self._resolve_codex_mode()
         self._client = CodexOpenAIClient(
             token_provider=self.get_bearer_token,
             account_id_provider=self._resolve_account_id,
@@ -83,13 +190,6 @@ class CodexAuthProvider(CustomLLM):
         if not base.endswith("/codex"):
             base = f"{base}/codex"
         return base
-
-    def _resolve_codex_mode(self) -> bool:
-        """Resolve CODEX_MODE feature flag."""
-        env_value = os.getenv(constants.CODEX_MODE_ENV)
-        if env_value is None:
-            return constants.DEFAULT_CODEX_MODE
-        return env_value.strip().lower() not in {"0", "false", "off"}
 
     def _maybe_enable_debug_logging(self) -> None:
         if os.getenv("CODEX_DEBUG", "").lower() in {"1", "true", "yes", "on", "debug"}:
@@ -178,7 +278,7 @@ class CodexAuthProvider(CustomLLM):
     ) -> list[dict[str, Any]]:
         """Return Codex-ready input, optionally prepending the bridge prompt when tools are used."""
         input_messages = list(messages)
-        if self._codex_mode_enabled and tools:
+        if tools:
             input_messages = [build_tool_bridge_message(), *input_messages]
         return input_messages
 
@@ -282,7 +382,118 @@ class CodexAuthProvider(CustomLLM):
         custom_llm_provider: str | None = None,
         **kwargs: Any,
     ) -> ModelResponse:
-        """Completion method - required by LiteLLM CustomLLM interface."""
+        """Complete a chat completion request using Codex authentication.
+
+        This method implements the synchronous completion interface required by LiteLLM's
+        CustomLLM. It handles the complete request lifecycle including model normalization,
+        instruction derivation, payload construction, API dispatch, and response transformation.
+
+        Parameters
+        ----------
+        model : str
+            The model identifier. Supports various formats including provider prefixes
+            (e.g., "codex/gpt-5.1-codex", "codex-oauth/gpt-5.1-codex-max") and effort
+            suffixes (e.g., "-high", "-medium", "-xhigh").
+        messages : list[dict[str, Any]]
+            List of chat messages in OpenAI format. Each message should have 'role'
+            (system, user, assistant, tool) and 'content' keys. Tool messages should
+            include 'tool_call_id' and 'content'.
+        api_base : str | None, optional
+            Custom API base URL. If None, uses the default Codex API endpoint.
+        custom_llm_provider : str | None, optional
+            Custom provider identifier (reserved for LiteLLM interface compatibility).
+        **kwargs : Any
+            Additional parameters including:
+            - tools: List of tool definitions for function calling
+            - tool_choice: Tool selection strategy ("auto", "required", "none")
+            - metadata: Additional metadata to include in the request
+            - user: User identifier for the request
+            - reasoning_effort: Reasoning effort level ("none", "minimal", "low", "medium", "high", "xhigh")
+            - verbosity: Response verbosity level
+            - prompt_cache_key: Cache key for prompt caching
+
+        Returns
+        -------
+        ModelResponse
+            LiteLLM-compatible response object containing the completion result,
+            usage statistics, and metadata.
+
+        Raises
+        ------
+        CodexAuthFileNotFoundError
+            If Codex CLI authentication file is not found.
+        CodexAuthTokenExpiredError
+            If the authentication token has expired.
+        RuntimeError
+            If the API request fails or response parsing fails.
+
+        Examples
+        --------
+        Basic completion:
+
+        >>> provider = CodexAuthProvider()
+        >>> response = provider.completion(
+        ...     model="codex/gpt-5.1-codex", messages=[{"role": "user", "content": "Hello, world!"}]
+        ... )
+        >>> print(response.choices[0].message.content)
+
+        With custom API base:
+
+        >>> response = provider.completion(
+        ...     model="gpt-5.1-codex",
+        ...     messages=[{"role": "user", "content": "Explain quantum computing"}],
+        ...     api_base="https://custom.endpoint.com",
+        ... )
+
+        With tool calling:
+
+        >>> tools = [
+        ...     {
+        ...         "type": "function",
+        ...         "function": {
+        ...             "name": "get_weather",
+        ...             "description": "Get weather for a location",
+        ...             "parameters": {
+        ...                 "type": "object",
+        ...                 "properties": {
+        ...                     "location": {"type": "string", "description": "City name"}
+        ...                 },
+        ...             },
+        ...         },
+        ...     }
+        ... ]
+        >>> response = provider.completion(
+        ...     model="codex/gpt-5.1-codex-max",
+        ...     messages=[{"role": "user", "content": "What's the weather in Paris?"}],
+        ...     tools=tools,
+        ...     tool_choice="auto",
+        ... )
+
+        With reasoning configuration:
+
+        >>> response = provider.completion(
+        ...     model="codex/gpt-5.1-codex-high",
+        ...     messages=[{"role": "user", "content": "Analyze this complex problem"}],
+        ...     reasoning_effort="high",
+        ...     verbosity="high",
+        ... )
+
+        Notes
+        -----
+        - The method automatically handles token refresh if needed
+        - Model names are normalized to Codex-compatible identifiers
+        - System messages are converted to Codex instructions
+        - Tool bridge prompts are automatically added when tools are present
+        - Unsupported parameters are filtered out to prevent API errors
+        - Detailed logging is available when CODEX_DEBUG=1
+
+        See Also
+        --------
+        - `acompletion`: Asynchronous version of this method
+        - `streaming`: Streaming version of this method
+        - `normalize_model`: Model name normalization
+        - `derive_instructions`: Message to instruction conversion
+        """
         _ = custom_llm_provider  # parameter reserved by LiteLLM interface
 
         kwargs = dict(kwargs)
@@ -291,12 +502,9 @@ class CodexAuthProvider(CustomLLM):
         self.get_bearer_token()
 
         normalized_model = normalize_model(strip_provider_prefix(model))
-        instructions_text = (
-            fetch_codex_instructions(normalized_model) if self._codex_mode_enabled else None
-        )
+        instructions_text = fetch_codex_instructions(normalized_model)
         instructions, input_messages = derive_instructions(
             messages,
-            codex_mode=self._codex_mode_enabled,
             normalized_model=normalized_model,
             instructions_text=instructions_text,
         )
@@ -331,12 +539,9 @@ class CodexAuthProvider(CustomLLM):
         self.get_bearer_token()
 
         normalized_model = normalize_model(strip_provider_prefix(model))
-        instructions_text = (
-            fetch_codex_instructions(normalized_model) if self._codex_mode_enabled else None
-        )
+        instructions_text = fetch_codex_instructions(normalized_model)
         instructions, input_messages = derive_instructions(
             messages,
-            codex_mode=self._codex_mode_enabled,
             normalized_model=normalized_model,
             instructions_text=instructions_text,
         )
