@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  litellm-proxy:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: litellm-codex-proxy
+    ports:
+      - "4000:4000"
+    volumes:
+      # Mount config
+      - ./configs/litellm-config.yaml:/app/config.yaml
+
+      # CRITICAL: Mount your Codex auth directory (read-only)
+      - ~/.codex:/root/.codex:ro
+
+      # Logs
+      - ./logs:/app/logs
+
+    environment:
+      # Codex does not require API keys in env vars, but other providers might
+      # Other provider keys
+      # - GITHUB_COPILOT_API_KEY=${GITHUB_COPILOT_API_KEY}
+      # - GEMINI_API_KEY=${GEMINI_API_KEY}
+
+      # Python path for custom provider
+      - PYTHONPATH=/app
+
+      # Logging
+      - LITELLM_LOG=DEBUG
+
+    command: ["--config", "/app/config.yaml"]
+
+    networks:
+      - llm-network
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  llm-network:
+    driver: bridge

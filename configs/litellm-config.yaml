@@ -1,0 +1,48 @@
+# ============================================
+# LITELLM CONFIG WITH CODEX OAUTH PROVIDER
+# ============================================
+
+general_settings:
+  master_key: sk-your-master-key-12345
+  # proxy_logging: true
+  # detailed_debug: true
+
+# ============================================
+# MODEL CONFIGURATIONS
+# ============================================
+model_list:
+
+  # CHATGPT PLUS via Codex OAuth (Your custom provider)
+  - model_name: chatgpt-plus-gpt-5.1-codex-max
+    litellm_params:
+      model: codex/gpt-5.1-codex-max
+      # No API key needed - uses Codex auth.json
+    router_settings:
+      rpm: 3500
+      tpm: 90000
+
+  - model_name: chatgpt-plus-gpt-5.1-codex
+    litellm_params:
+      model: codex/gpt-5.1-codex
+
+  - model_name: chatgpt-plus-gpt-5.1
+    litellm_params:
+      model: codex/gpt-5.1
+
+# ============================================
+# CUSTOM PROVIDER REGISTRATION
+# ============================================
+litellm_settings:
+  custom_provider_map:
+    - {"provider": "codex", "custom_handler": litellm_codex_oauth_provider.codex_auth_provider}
+
+# ============================================
+# ROUTING & FALLBACKS
+# ============================================
+# router_settings:
+#   routing_strategy: simple-shuffle
+#   fallback_model_group:
+#     best-quality:
+#       - chatgpt-plus-gpt-5.1-codex-max   # Best quality
+#       - chatgpt-plus-gpt-5.1-codex
+#       - chatgpt-plus-gpt-5.1

@@ -6,9 +6,11 @@ dynamic = ["version"]
 readme = "README.md"
 
 # ================== DEPENDENCIES ===================
-requires-python = ">= 3.11"
+requires-python = ">= 3.11, <3.14"
 dependencies = [
-
+  "litellm>=1.80.7,<2",
+  "httpx>=0.28.1,<0.29",
+  "typing_extensions>=4.15.0,<5",
 ]
 
 # ================== METADATA ===================
@@ -25,6 +27,12 @@ platforms = ["linux-64", "osx-64", "osx-arm64", "win-64"]
 
 [tool.pixi.pypi-dependencies]
 litellm_codex_oauth_provider = { path = ".", editable = true }
+
+# System requirements for Pixi
+# These specify the minimum system versions required for the component to run.
+[tool.pixi.system-requirements]
+linux = "4.4.0"
+macos = "12.0"
 
 #================== BUILD SYSTEM ===================
 [build-system]
@@ -77,7 +85,9 @@ mkdocs-minify-plugin = ">=0.6.0"
 [tool.pixi.feature.local.dependencies]
 ipykernel = ">=6.29.5"
 ipython = ">=8.0"
-nbconvert = ">=7.16.6,<8"
+
+[tool.pixi.feature.local.pypi-dependencies]
+litellm = { version = ">=1.80.7,<2", extras = ["proxy"] }
 
 [tool.pixi.feature.build.dependencies]
 git-changelog = ">=2.0.0"
