@@ -75,12 +75,14 @@ When the workflow runs on the main branch, GitHub generates an OIDC token with t
 sub: repo:jslorrma/litellm-codex-oauth-provider:environment:testpypi
 repository: jslorrma/litellm-codex-oauth-provider
 repository_owner: jslorrma
-repository_owner_id: 47713663
+repository_owner_id: <actual_owner_id>  # Automatically populated by GitHub
 workflow_ref: jslorrma/litellm-codex-oauth-provider/.github/workflows/ci.yml@refs/heads/main
 job_workflow_ref: jslorrma/litellm-codex-oauth-provider/.github/workflows/ci.yml@refs/heads/main
 ref: refs/heads/main
 environment: testpypi
 ```
+
+**Note**: You don't need to configure the `repository_owner_id` - GitHub automatically includes it in the OIDC token and TestPyPI validates it.
 
 TestPyPI validates these claims against your trusted publisher configuration.
 

@@ -78,12 +78,29 @@ jobs:
       - name: Get previous version from TestPyPI
         id: get-previous-version
         run: |
-          # Extract package name using portable grep/sed
-          package_name=$(grep '^name = ' pyproject.toml | sed 's/^name = "\([^"]*\)"/\1/')
+          # Extract package name using portable grep/sed (handles both single and double quotes)
+          package_name=$(grep '^name = ' pyproject.toml | sed 's/^name = ["'\'']\([^"'\'']*\)["'\'']/\1/')
           
-          # Get latest version from TestPyPI using proper version sorting
-          previous_version=$(curl -sf https://test.pypi.org/pypi/$package_name/json \
-            | jq -r '.releases | keys | sort_by(split(".") | map(tonumber)) | .[-1]')
+          # Get latest version from TestPyPI
+          # Note: This uses Python packaging.version for proper semantic version comparison
+          previous_version=$(curl -sf https://test.pypi.org/pypi/$package_name/json | python3 -c "
+          import sys, json
+          from packaging.version import parse, InvalidVersion
+          try:
+              data = json.load(sys.stdin)
+              versions = []
+              for v in data['releases'].keys():
+                  try:
+                      versions.append((parse(v), v))
+                  except InvalidVersion:
+                      pass  # Skip invalid versions
+              if versions:
+                  print(max(versions)[1])
+              else:
+                  print('0.0.0')
+          except:
+              print('0.0.0')
+          ")
           
           # Fallback to 0.0.0 if package doesn't exist yet
           if [ "$previous_version" = "null" ] || [ -z "$previous_version" ]; then
