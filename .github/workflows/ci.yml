@@ -16,7 +16,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2
 
       - name: Set up pixi
         uses: prefix-dev/setup-pixi@v0.8.10
@@ -37,7 +37,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2
 
       - name: Set up pixi
         uses: prefix-dev/setup-pixi@v0.8.10
@@ -49,7 +49,7 @@ jobs:
         run: pixi run -e test test-with-coverage
 
       - name: Upload coverage and reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.5.0
         with:
           name: test-reports
           path: |
@@ -67,7 +67,7 @@ jobs:
       new-version: ${{ steps.version-metadata.outputs.newVersion }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2
 
       - name: Set up pixi
         uses: prefix-dev/setup-pixi@v0.8.10
@@ -137,7 +137,7 @@ jobs:
     if: needs.version-check.outputs.version-changed == 'true'
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2
 
       - name: Set up pixi
         uses: prefix-dev/setup-pixi@v0.8.10
@@ -149,7 +149,7 @@ jobs:
         run: pixi run -e build build
 
       - name: Upload dist
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.5.0
         with:
           name: python-package-distributions
           path: dist/
@@ -177,7 +177,7 @@ jobs:
 
     steps:
       - name: Download dist
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v4.1.3
         with:
           name: python-package-distributions
           path: dist/
