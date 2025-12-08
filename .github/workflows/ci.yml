@@ -72,7 +72,11 @@ jobs:
         id: get-previous-version
         run: |
           package_name=$(grep -Po '(?<=^name = \")[^\"]*' pyproject.toml)
-          previous_version=$(curl -s https://test.pypi.org/pypi/$package_name/json | jq -r '.releases | keys | .[-1]')
+          previous_version=$(curl -sf https://test.pypi.org/pypi/$package_name/json \
+            | jq -r '.releases | keys | .[-1]')
+          if [ "$previous_version" = "null" ] || [ -z "$previous_version" ]; then
+            previous_version="0.0.0"
+          fi
           echo "previous_version=$previous_version" >> "$GITHUB_ENV"
 
       - name: Compare versions
