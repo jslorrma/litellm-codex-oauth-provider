@@ -108,9 +108,7 @@ Use the provided Modern Python Style Guide to write or review Python code with a
 
 **Simple Helper Functions (private, single-purpose):**
 - One-line summary is often sufficient
-- Include Parameters and Returns sections for all functions used within the same module
-- Only skip Parameters/Returns for truly internal/nested functions that are not exported and used exclusively within their immediate scope
-- Functions used within the same module should include Parameters/Returns even if private
+- Include Parameters and Returns sections for all functions used within the same module, even if private. Only skip these sections for truly internal or nested functions that are not exported and used exclusively within their immediate scope.
 - Only add detail if function is complex or has important behavior
 - Avoid over-documentation for trivial functions
 
