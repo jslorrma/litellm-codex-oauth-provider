@@ -5,64 +5,33 @@ The LiteLLM Codex OAuth Provider is a sophisticated adapter that bridges Codex C
 ## System Architecture
 
 ```mermaid
+---
+config:
+  theme: neutral
+  layout: elk
+  elk:
+    nodeSpacing: 60
+    edgeSpacing: 50
+    layoutDirection: TB
+---
+
 graph TB
-    subgraph "Client Applications"
-        A[LiteLLM Proxy] --> B[OpenAI Client]
-        C[Direct Python Client] --> D[litellm_codex_oauth_provider]
-    end
+    A[Client Applications] --> B[CodexAuthProvider]
+    B --> C[OpenAI Client Layer]
+    C --> D[ChatGPT Backend API]
 
-    subgraph "Authentication Layer"
-        E[Codex CLI] --> F[~/.codex/auth.json]
-        F --> G[AuthContext]
-        G --> H[Token Refresh Logic]
-    end
+    E[Codex CLI Auth] --> F[Token Management]
+    F --> B
 
-    subgraph "Core Provider"
-        D --> I[CodexAuthProvider]
-        I --> J[OpenAI Client Delegation]
-        I --> K[Request Orchestration]
-        I --> L[Response Adapter]
-    end
+    B --> G[Response Adapter]
+    G --> H[LiteLLM Format]
 
-    subgraph "OpenAI Client Layer"
-        J --> M[CodexOpenAIClient]
-        J --> N[AsyncCodexOpenAIClient]
-        M --> O[Custom Auth Headers]
-        N --> O
-        O --> P[Token Provider Pattern]
-    end
+    B --> I[Model Mapping]
+    I --> C
 
-    subgraph "Response Processing"
-        L --> Q[Response Adapter]
-        Q --> R[OpenAI Typed Models]
-        Q --> S[SSE Processing]
-        Q --> T[Fallback Mechanisms]
-    end
-
-    subgraph "External APIs"
-        M --> U[ChatGPT Backend API]
-        N --> U
-        H --> V[OpenAI Auth API]
-        W[GitHub API] --> X[Codex Instructions]
-    end
-
-    subgraph "Data Flow"
-        Y[Model Normalization] --> K
-        Z[Prompt Derivation] --> K
-        AA[Tool Bridge Logic] --> K
-        BB[Reasoning Config] --> K
-    end
-
-    style A fill:#e1f5fe
-    style D fill:#f3e5f5
-    style I fill:#e8f5e8
-    style M fill:#fff3e0
-    style N fill:#fff3e0
-    style U fill:#fff3e0
-    style V fill:#fff3e0
+    B --> J[Remote Instructions]
+    J --> K[GitHub Releases]
 ```
-
-## Component Overview
 
 ### 1. Authentication Layer (`auth.py`)
 
@@ -74,6 +43,16 @@ The authentication layer manages the complete token lifecycle:
 - **Error Handling**: Provides specific exceptions for different auth failure modes
 
 ```mermaid
+---
+config:
+  theme: neutral
+  layout: elk
+  elk:
+    nodeSpacing: 60
+    edgeSpacing: 50
+    layoutDirection: TB
+---
+
 sequenceDiagram
     participant C as Client
     participant P as Provider
@@ -103,25 +82,30 @@ The OpenAI client layer provides Codex-specific customization of the official Op
 #### Custom Client Architecture
 
 ```mermaid
+---
+config:
+  theme: neutral
+  layout: elk
+  elk:
+    nodeSpacing: 60
+    edgeSpacing: 50
+    layoutDirection: TB
+---
+
 graph TD
     A[CodexAuthProvider] --> B[CodexOpenAIClient]
     A --> C[AsyncCodexOpenAIClient]
 
-    B --> D[_BaseCodexClient]
-    C --> E[AsyncOpenAI]
+    B --> D[Custom OpenAI Client]
+    C --> E[Custom Async OpenAI Client]
 
-    D --> F[Custom Auth Headers]
-    E --> G[Custom Auth Headers]
+    D --> F[Token Provider Pattern]
+    E --> F
+    F --> G[Dynamic Authentication]
 
-    F --> H[Token Provider]
-    G --> H
-    H --> I[Account ID Provider]
-
-    D --> J[Header Injection]
-    E --> J
-    J --> K[OpenAI Beta Headers]
-    J --> L[Content-Type Headers]
-    J --> M[Accept Headers]
+    D --> H[Custom Headers]
+    E --> H
+    H --> I[Authorization + Beta Headers]
 ```
 
 #### Key Customizations
@@ -150,6 +134,16 @@ The `CodexAuthProvider` class orchestrates the entire request/response pipeline:
 #### Request Processing Flow
 
 ```mermaid
+---
+config:
+  theme: neutral
+  layout: elk
+  elk:
+    nodeSpacing: 60
+    edgeSpacing: 50
+    layoutDirection: TB
+---
+
 sequenceDiagram
     participant C as Client
     participant P as CodexAuthProvider
@@ -182,6 +176,16 @@ The response adapter provides pure functions for transforming Codex responses to
 #### Response Transformation Pipeline
 
 ```mermaid
+---
+config:
+  theme: neutral
+  layout: elk
+  elk:
+    nodeSpacing: 60
+    edgeSpacing: 50
+    layoutDirection: TB
+---
+
 graph TD
     A[OpenAI Response] --> B[Parse Response Body]
     B --> C{Response Type?}
@@ -193,11 +197,8 @@ graph TD
     E --> G
     F --> G
 
-    G --> H[Transform Choices]
-    H --> I[Handle Tool Calls]
-    I --> J[Resolve Content]
-    J --> K[Build Usage]
-    K --> L[Create ModelResponse]
+    G --> H[Transform to LiteLLM Format]
+    H --> I[Create ModelResponse]
 ```
 
 #### Key Features
@@ -209,166 +210,43 @@ graph TD
 
 ### 5. Remote Resources (`remote_resources.py`)
 
-Manages dynamic instruction fetching and caching:
-
-```mermaid
-graph TD
-    A[fetch_codex_instructions] --> B[Get Model Family]
-    B --> C[Check Cache]
-    C --> D{Cache Valid?}
-    D -->|Yes| E[Return Cached]
-    D -->|No| F[Fetch from GitHub]
-    F --> G[Parse Release]
-    G --> H[Download Instructions]
-    H --> I[Update Cache]
-    I --> E
-
-    C --> J[Load Metadata]
-    J --> K[Check TTL]
-    K --> L[ETag Support]
-```
+Manages dynamic instruction fetching and caching from GitHub releases. The system automatically downloads and caches Codex instructions for different model families, with support for ETag validation and TTL-based expiration to minimize unnecessary network requests.
 
 ### 6. Model Mapping (`model_map.py`)
 
-Handles intelligent model name normalization and alias resolution:
-
-```mermaid
-graph LR
-    A[codex/gpt-5.1-codex-low] --> B[strip_provider_prefix]
-    B --> C[gpt-5.1-codex-low]
-    C --> D[normalize_model]
-    D --> E[MODEL_MAP lookup]
-    E --> F[gpt-5.1-codex]
-
-    G[codex-oauth/gpt-5-codex-high] --> H[strip_provider_prefix]
-    H --> I[gpt-5-codex-high]
-    I --> J[normalize_model]
-    J --> K[MODEL_MAP lookup]
-    K --> L[gpt-5.1-codex]
-```
+Handles intelligent model name normalization and alias resolution. The system automatically converts LiteLLM model strings (like `codex/gpt-5.1-codex-low`) to Codex-compatible identifiers through a series of transformations including provider prefix stripping, normalization rules, and alias mapping.
 
 ## Data Flow Architecture
 
 ### Request Pipeline
 
-```mermaid
-flowchart TD
-    A[Client Request] --> B[Model String Parsing]
-    B --> C[Provider Prefix Stripping]
-    C --> D[Model Normalization]
-    D --> E[Parameter Validation]
-    E --> F[Instruction Derivation]
-    F --> G[Payload Construction]
-    G --> H[OpenAI Client Delegation]
-    H --> I[Custom Header Injection]
-    I --> J[HTTP Request]
-    J --> K[Response Processing]
-    K --> L[Response Transformation]
-    L --> M[LiteLLM Response]
-```
+The provider processes requests through a streamlined pipeline that handles model normalization, instruction derivation, and OpenAI client delegation. Each step is designed to be efficient and maintainable.
 
 ### Response Transformation Pipeline
 
-```mermaid
-flowchart TD
-    A[OpenAI Response] --> B[Response Body Parsing]
-    B --> C{Format Detection}
-    C -->|SSE| D[SSE to JSON Conversion]
-    C -->|JSON| E[Direct JSON Parse]
-    C -->|Typed| F[OpenAI Model Validation]
-
-    D --> G[Extract Response Payload]
-    E --> G
-    F --> G
-
-    G --> H[Choice Processing]
-    H --> I[Tool Call Extraction]
-    I --> J[Message Content Resolution]
-    J --> K[Usage Statistics]
-    K --> L[ModelResponse Construction]
-```
-
-## Security Architecture
-
-### Token Security
-
-```mermaid
-graph TD
-    A[~/.codex/auth.json] --> B[Encrypted Storage]
-    B --> C[Token Provider Pattern]
-    C --> D[Dynamic Token Retrieval]
-    D --> E[Custom Header Injection]
-    E --> F[OpenAI Client]
-    F --> G[ChatGPT Backend]
-
-    H[Token Refresh] --> I[OpenAI OAuth API]
-    I --> J[New Token]
-    J --> K[Update auth.json]
-    K --> L[Clear Memory Cache]
-```
-
-### Authentication Flow
-
-```mermaid
-sequenceDiagram
-    participant P as Provider
-    participant O as OpenAI Client
-    participant T as Token Provider
-    participant A as Account ID Provider
-    participant H as HTTP Headers
-
-    P->>O: responses.create()
-    O->>T: get_bearer_token()
-    T-->>O: access_token
-    O->>A: get_account_id()
-    A-->>O: account_id
-    O->>H: inject_custom_headers()
-    H->>H: Authorization: Bearer {token}
-    H->>H: chatgpt-account-id: {account_id}
-    H->>H: OpenAI-Beta: responses=experimental
-    O->>Backend: POST /codex/responses
-```
+The response transformation pipeline handles multiple response formats from the Codex backend, ensuring compatibility with LiteLLM's expected format through robust parsing and transformation logic.
 
 ## Configuration Architecture
 
 ### Environment Variables
 
-```mermaid
-graph LR
-    A[CODEX_AUTH_FILE] --> B[Auth File Path]
-    C[CODEX_CACHE_DIR] --> D[Cache Directory]
-    E[CODEX_MODE] --> F[Feature Flags]
-    G[CODEX_DEBUG] --> H[Debug Logging]
+The provider supports several environment variables for configuration:
 
-    B --> I[AuthContext Loading]
-    D --> J[Instruction Caching]
-    F --> K[Tool Bridge Logic]
-    H --> L[Logging Configuration]
-```
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CODEX_AUTH_FILE` | `~/.codex/auth.json` | Path to auth file |
+| `CODEX_CACHE_DIR` | `~/.opencode/cache` | Instruction cache directory |
+| `CODEX_MODE` | `True` | Enable Codex-specific features |
+| `CODEX_DEBUG` | `False` | Enable debug logging |
 
 ### Client Configuration
 
-```mermaid
-graph TD
-    A[CodexAuthProvider] --> B[Initialize Clients]
-    B --> C[CodexOpenAIClient]
-    B --> D[AsyncCodexOpenAIClient]
+The provider automatically configures OpenAI clients with appropriate settings:
 
-    C --> E[Token Provider]
-    C --> F[Account ID Provider]
-    C --> G[Base URL]
-    C --> H[Timeout]
-
-    D --> E
-    D --> F
-    D --> G
-    D --> H
-
-    E --> I[get_bearer_token]
-    F --> J[_resolve_account_id]
-    G --> K[_resolve_base_url]
-    H --> L[60.0 seconds]
-```
+- **Base URL**: Automatically resolved based on environment
+- **Timeout**: 60 seconds for requests, 20 seconds for GitHub operations
+- **Token Provider**: Dynamic token retrieval from auth context
+- **Account ID Provider**: Automatic ChatGPT account ID resolution
 
 ## Performance Considerations
 

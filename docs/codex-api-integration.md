@@ -13,6 +13,16 @@ The provider acts as a sophisticated adapter between LiteLLM's OpenAI-compatible
 The provider uses a custom OpenAI client that extends the official OpenAI client with Codex-specific authentication and header injection:
 
 ```mermaid
+---
+config:
+  theme: neutral
+  layout: elk
+  elk:
+    nodeSpacing: 60
+    edgeSpacing: 50
+    layoutDirection: TB
+---
+
 graph TD
     A[CodexAuthProvider] --> B[CodexOpenAIClient]
     A --> C[AsyncCodexOpenAIClient]
@@ -99,22 +109,30 @@ def _prepare_options(self, options: FinalRequestOptions) -> FinalRequestOptions:
 The provider performs intelligent model name normalization to map LiteLLM model strings to Codex-compatible identifiers:
 
 ```mermaid
+---
+config:
+  theme: neutral
+  layout: elk
+  elk:
+    nodeSpacing: 60
+    edgeSpacing: 50
+    layoutDirection: TB
+---
+
 graph TD
     A[Input Model String] --> B[strip_provider_prefix]
     B --> C[Remove codex/, codex-oauth/, codex-]
     C --> D[normalize_model]
     D --> E[MODEL_MAP lookup]
-    E --> F[Alias resolution]
-    F --> G[Fallback rules]
-    G --> H[Final normalized model]
+    E --> F[Final normalized model]
 
     I[codex/gpt-5.1-codex-low] --> B
     J[codex-oauth/gpt-5-codex-high] --> B
     K[gpt-5.1-codex-mini] --> B
 
-    H --> L[gpt-5.1-codex]
-    H --> M[gpt-5.1-codex]
-    H --> N[gpt-5.1-codex-mini]
+    F --> L[gpt-5.1-codex]
+    F --> M[gpt-5.1-codex]
+    F --> N[gpt-5.1-codex-mini]
 ```
 
 ### Request Payload Construction
@@ -136,26 +154,9 @@ def _build_payload(
 
 #### Payload Structure
 
-```mermaid
-graph TD
-    A[LiteLLM Parameters] --> B[Extract optional_params]
-    B --> C[Normalize tools]
-    C --> D[Build base payload]
-    D --> E[Add model]
-    E --> F[Add input messages]
-    F --> G[Add instructions]
-    G --> H[Add reasoning config]
-    H --> I[Add passthrough options]
-    I --> J[Final Codex Payload]
+The provider transforms LiteLLM parameters into Codex API payloads by extracting optional parameters, normalizing tools, and building a comprehensive payload that includes the model, input messages, instructions, reasoning configuration, and any additional options.
 
-    K[model] --> E
-    L[messages] --> F
-    M[instructions] --> G
-    N[reasoning_effort] --> H
-    O[metadata, tool_choice] --> I
-```
-
-#### Key Payload Fields
+**Key Payload Fields:**
 
 | Field | Type | Description | Source |
 |-------|------|-------------|---------|
@@ -170,29 +171,9 @@ graph TD
 
 ### Message Transformation
 
-The provider converts OpenAI message format to Codex input format:
+The provider converts OpenAI message format to Codex input format through role-based processing:
 
-```mermaid
-graph TD
-    A[OpenAI Messages] --> B[Role-based processing]
-    B --> C[System messages]
-    B --> D[User messages]
-    B --> E[Assistant messages]
-    B --> F[Tool messages]
-
-    C --> G[Filter toolchain prompts]
-    C --> H[Add to instructions]
-
-    D --> I[Convert to Codex format]
-    E --> I
-    F --> J[Convert to function_call_output]
-
-    I --> K[Codex input array]
-    J --> K
-    H --> L[Combined instructions]
-```
-
-#### Message Type Conversions
+**Message Type Conversions:**
 
 | OpenAI Role | Codex Type | Transformation |
 |-------------|------------|----------------|
@@ -202,323 +183,35 @@ graph TD
 | `tool` | `function_call_output` | Special handling |
 | `function` | `function_call` | Legacy support |
 
+System messages are filtered to remove toolchain prompts and added to the instructions, while user and assistant messages are converted directly to Codex format. Tool messages are handled specially as function call outputs.
+
 ### Tool Bridge Logic
 
-When tools are present, the provider prepends a special bridge prompt:
-
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant P as Provider
-    participant B as Bridge Logic
-    participant T as Tool Processing
-
-    C->>P: completion(model, messages, tools)
-    P->>T: _normalize_tools(tools)
-    T-->>P: normalized_tools
-    alt Tools present
-        P->>B: build_tool_bridge_message()
-        B-->>P: bridge_message
-        P->>P: prepend_bridge(bridge_message)
-    end
-    P->>P: continue_processing()
-```
+When tools are present, the provider prepends a special bridge prompt to enable function calling capabilities. This bridge message instructs the model on how to use the provided tools and format its responses appropriately.
 
 ## Response Processing Details
 
-### Response Type Detection
-
-The provider handles multiple response formats from the Codex backend:
-
-```mermaid
-graph TD
-    A[HTTP Response] --> B[Check Content-Type]
-    B -->|text/event-stream| C[SSE Processing]
-    B -->|application/json| D[JSON Processing]
-
-    C --> E[Parse SSE events]
-    E --> F[Extract final event]
-    F --> G[Convert to JSON]
-
-    D --> H[Direct JSON parse]
-
-    G --> I[Response transformation]
-    H --> I
-```
-
-### SSE Event Processing
-
-For streaming responses, the provider processes Server-Sent Events:
-
-```python
-def convert_sse_to_json(payload: str) -> dict[str, Any]:
-    """Convert buffered SSE text to final JSON payload."""
-    events = []
-    for line in payload.splitlines():
-        if not line.startswith("data:"):
-            continue
-        data = line.removeprefix("data:").strip()
-        if not data or data == "[DONE]":
-            continue
-        try:
-            event = json.loads(data)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(event, Mapping):
-            events.append(event)
-
-    validated = _extract_validated_response_from_events(events)
-    if validated:
-        return validated
-
-    return _extract_response_from_events(events)
-```
-
-```mermaid
-graph TD
-    A[SSE Data] --> B[Split by lines]
-    B --> C[Extract data: lines]
-    C --> D[Parse JSON events]
-    D --> E[Filter valid events]
-    E --> F[Reverse order]
-    F --> G[Find final response]
-    G --> H[Extract response payload]
-```
-
-### Response Transformation Pipeline
-
-The provider performs complex transformation from Codex format to LiteLLM format:
-
-```mermaid
-graph TD
-    A[OpenAI Response] --> B[Extract response payload]
-    B --> C[Get choices array]
-    C --> D{Choices present?}
-    D -->|No| E[Check output field]
-    D -->|Yes| F[Process primary choice]
-
-    E --> G[Coerce from output]
-    G --> F
-
-    F --> H[Extract message]
-    H --> I[Collect tool calls]
-    I --> J[Resolve content]
-    J --> K[Handle function calls]
-    K --> L[Build usage]
-    L --> M[Create ModelResponse]
-```
-
-#### Choice Processing Logic
-
-```mermaid
-graph TD
-    A[Choice] --> B[Extract message]
-    B --> C[Get tool_calls]
-    C --> D{Tool calls present?}
-    D -->|Yes| E[Extract from message]
-    D -->|No| F[Check output field]
-    F --> G[Extract function_call items]
-    G --> H[Build tool_calls array]
-
-    E --> I[Combine tool calls]
-    H --> I
-
-    I --> J[Resolve content]
-    J --> K[Set finish_reason]
-    K --> L[Final choice]
-```
-
-### Tool Call Extraction
-
-The provider handles multiple tool call formats:
-
-```mermaid
-graph TD
-    A[Response] --> B[Extract tool_calls]
-    B --> C{Format detected?}
-    C -->|OpenAI format| D[function.name, function.arguments]
-    C -->|Codex format| E[name, arguments at top level]
-    C -->|Output items| F[type=function_call]
-
-    D --> G[Standardize format]
-    E --> G
-    F --> G
-
-    G --> H[Build tool_calls array]
-    H --> I[Return to transformation]
-```
+The provider handles multiple response formats from the Codex backend, including Server-Sent Events (SSE) streaming and standard JSON responses. The system automatically detects the response type and applies appropriate parsing strategies, with fallback mechanisms to ensure robust operation across different response formats.
 
 ## Authentication Flow Details
 
-### Token Lifecycle Management
-
-```mermaid
-sequenceDiagram
-    participant P as Provider
-    participant A as Auth Module
-    participant F as auth.json
-    participant C as Cache
-    participant O as OpenAI Client
-
-    P->>A: get_auth_context()
-    A->>C: Check cached token
-    alt Token cached and valid
-        C-->>A: cached_token
-        A-->>P: AuthContext
-    else Token expired/missing
-        A->>F: load_auth_data()
-        F-->>A: auth_data
-        alt Token expired
-            A->>O: refresh_token()
-            O-->>A: new_token
-            A->>F: update auth.json
-            A->>C: cache new token
-        end
-        A-->>P: AuthContext
-    end
-```
+The authentication system manages the complete token lifecycle, from initial extraction to automatic refresh when tokens expire. The provider uses a token provider pattern for dynamic authentication, ensuring that fresh tokens are always available for API requests.
 
 ### JWT Account ID Extraction
 
-```mermaid
-graph TD
-    A[Access Token] --> B[Split JWT]
-    B --> C[Extract payload]
-    C --> D[Base64 decode]
-    D --> E[Parse JSON]
-    E --> F[Extract account claim]
-    F --> G[Get chatgpt_account_id]
-    G --> H[Return account ID]
-```
-
-### OpenAI Client Authentication
-
-```mermaid
-sequenceDiagram
-    participant P as Provider
-    participant O as OpenAI Client
-    participant T as Token Provider
-    participant A as Account ID Provider
-    participant H as HTTP Headers
-
-    P->>O: responses.create()
-    O->>T: get_bearer_token()
-    T-->>O: access_token
-    O->>A: get_account_id()
-    A-->>O: account_id
-    O->>H: inject_custom_headers()
-    H->>H: Authorization: Bearer {token}
-    H->>H: chatgpt-account-id: {account_id}
-    H->>H: OpenAI-Beta: responses=experimental
-    O->>Backend: POST /codex/responses
-```
+Access tokens contain JWT claims that include the ChatGPT account ID. The provider automatically extracts this information by parsing the JWT payload and decoding the base64-encoded claims to retrieve the account identifier needed for API requests.
 
 ## HTTP Dispatch Architecture
 
-### Fallback Mechanism
-
-The provider uses a fallback mechanism when OpenAI client dispatch fails:
-
-```mermaid
-graph TD
-    A[Request] --> B[Try OpenAI Client]
-    B --> C{Success?}
-    C -->|Yes| D[Return Response]
-    C -->|No| E[Fallback to httpx]
-    E --> F[Direct HTTP POST]
-    F --> G[Parse Response]
-    G --> H[Return Parsed Data]
-
-    B --> I[Log Error]
-    I --> J[Sanitize Headers]
-    J --> K[Raise Exception]
-```
-
-### HTTP Client Configuration
-
-```python
-def _create_http_client(base_url: str, timeout: float) -> httpx.Client:
-    return httpx.Client(base_url=base_url, timeout=timeout, follow_redirects=True)
-
-def _create_async_http_client(base_url: str, timeout: float) -> httpx.AsyncClient:
-    return httpx.AsyncClient(base_url=base_url, timeout=timeout, follow_redirects=True)
-```
+The provider uses the official OpenAI client library for HTTP communication, with automatic fallback mechanisms for robust operation. When the OpenAI client encounters issues, the system can fall back to direct HTTP requests using httpx for continued operation.
 
 ## Error Handling Strategy
 
-### HTTP Error Processing
-
-```mermaid
-graph TD
-    A[HTTP Response] --> B[Check status code]
-    B -->|2xx| C[Success path]
-    B -->|4xx/5xx| D[Error path]
-
-    D --> E[Extract error details]
-    E --> F[Parse JSON error]
-    F --> G[Extract message]
-    G --> H[Add rate limit headers]
-    H --> I[Add retry-after info]
-    I --> J[Format error string]
-    J --> K[Raise RuntimeError]
-```
-
-### Network Error Handling
-
-```mermaid
-graph TD
-    A[Network Request] --> B[HTTPX Client]
-    B --> C{Request successful?}
-    C -->|Yes| D[Return response]
-    C -->|No| E[Handle exception]
-
-    E --> F[HTTPStatusError]
-    E --> G[Other exceptions]
-
-    F --> H[Format with response details]
-    G --> I[Generic error message]
-
-    H --> J[Raise RuntimeError]
-    I --> J
-```
+The provider implements comprehensive error handling for both HTTP errors and network issues. Error responses are parsed and formatted to provide meaningful information while preserving rate limit headers and retry-after information for client applications.
 
 ## Remote Resources Management
 
-### Instruction Fetching and Caching
-
-```mermaid
-graph TD
-    A[fetch_codex_instructions] --> B[Get Model Family]
-    B --> C[Check Cache]
-    C --> D{Cache Valid?}
-    D -->|Yes| E[Return Cached]
-    D -->|No| F[Fetch from GitHub]
-    F --> G[Parse Release]
-    G --> H[Download Instructions]
-    H --> I[Update Cache]
-    I --> E
-
-    C --> J[Load Metadata]
-    J --> K[Check TTL]
-    K --> L[ETag Support]
-```
-
-### Cache Management
-
-```python
-@dataclass(slots=True)
-class CacheMetadata:
-    """Metadata for cached Codex instructions."""
-    etag: str | None
-    tag: str | None
-    last_checked: float | None
-    url: str | None
-
-def _should_use_cache(metadata: CacheMetadata, cached: str | None, now: float) -> bool:
-    if metadata.last_checked is None or cached is None:
-        return False
-    return now - float(metadata.last_checked) < constants.CODEX_INSTRUCTIONS_CACHE_TTL_SECONDS
-```
+The provider manages dynamic instruction fetching and caching from GitHub releases. Instructions are cached with a 15-minute TTL and ETag support to minimize unnecessary network requests while ensuring users receive the most up-to-date instructions for their chosen model family.
 
 ## Configuration and Constants
 
@@ -548,27 +241,14 @@ BASE_MODELS = ("gpt-5.1-codex", "gpt-5.1-codex-max", "gpt-5.1-codex-mini", "gpt-
 
 ## Performance Optimizations
 
-### Caching Strategy
+The provider implements several performance optimizations:
 
 1. **Token Caching**: 5-minute buffer before expiry
 2. **Instruction Caching**: 15-minute TTL with ETag support
 3. **Model Mapping**: Static dictionary (O(1) lookup)
-
-### Client Optimization
-
-```mermaid
-graph TD
-    A[HTTP Request] --> B[Reuse OpenAI Client]
-    B --> C[Connection pooling]
-    C --> D[Keep-alive connections]
-    D --> E[Reduced latency]
-```
-
-### Response Processing
-
-1. **Typed Model Validation**: OpenAI typed models for reliable parsing
-2. **Fallback Mechanisms**: Multiple parsing strategies for robustness
-3. **Efficient Transformation**: Pure functions for predictable performance
+4. **Connection Reuse**: OpenAI client manages connection pooling
+5. **Typed Model Validation**: OpenAI typed models for reliable parsing
+6. **Fallback Mechanisms**: Multiple parsing strategies for robustness
 
 ## Security Considerations
 

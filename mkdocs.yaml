@@ -14,7 +14,7 @@ nav:
         - Overview: architecture.md
         - Codex API Integration: codex-api-integration.md
     - API Reference:
-        - Complete API Reference: api-reference.md
+        - Complete API Reference: reference.md
     - Usage:
         - LiteLLM Proxy Setup: usage.md
         - Usage Examples: usage-examples.md
