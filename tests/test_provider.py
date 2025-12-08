@@ -179,13 +179,11 @@ def test_completion_forwards_supported_kwargs(
         provider, "_dispatch_response_request", return_value=mock_openai_response
     )
 
-    temperature = 0.3
-    max_output_tokens = 77
     provider.completion(
         model="codex/gpt-5.1-codex-max",
         messages=[{"role": "user", "content": "Hello"}],
-        temperature=temperature,
-        max_tokens=max_output_tokens,
+        temperature=0.3,
+        max_tokens=77,
         metadata={"source": "unit-test"},
         logging_obj="skip-me",
         reasoning_effort="minimal",
@@ -193,9 +191,8 @@ def test_completion_forwards_supported_kwargs(
     )
 
     payload = post_spy.call_args.kwargs["payload"]
-    assert payload["temperature"] == temperature
-    assert payload["max_output_tokens"] == max_output_tokens
-    assert "max_tokens" not in payload
+    assert "temperature" not in payload  # Codex endpoint rejects temperature
+    assert "max_output_tokens" not in payload  # Codex responses rejects this param
     assert payload["metadata"] == {"source": "unit-test"}
     assert "logging_obj" not in payload
     assert "reasoning_effort" not in payload
