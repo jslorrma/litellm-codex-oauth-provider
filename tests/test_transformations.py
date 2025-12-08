@@ -1,4 +1,7 @@
-"""Tests for transformation utilities (model mapping, reasoning, prompts)."""
+"""Given assorted Codex inputs, when transformation helpers run, then model mapping,
+
+reasoning config, and prompt normalization behave as expected.
+"""
 
 from __future__ import annotations
 
@@ -8,13 +11,19 @@ from litellm_codex_oauth_provider.reasoning import apply_reasoning_config
 
 
 def test_normalize_model_handles_alias_and_suffix() -> None:
-    """Given a prefixed legacy model, when normalized, then codex base name is returned."""
+    """Given a prefixed legacy model, when normalized, then a codex base name is returned.
+
+    Confirms alias resolution drops provider prefixes and effort suffixes to the canonical model.
+    """
     normalized = normalize_model("codex/gpt-5-codex-high")
     assert normalized == "gpt-5.1-codex"
 
 
 def test_reasoning_config_clamps_codex_mini() -> None:
-    """Given a codex-mini xhigh request, when applied, then effort is clamped to high."""
+    """Given a codex-mini xhigh request, when applied, then effort is clamped to high.
+
+    Verifies family-specific constraints prevent unsupported effort levels for mini models.
+    """
     config = apply_reasoning_config(
         original_model="gpt-5.1-codex-mini-xhigh",
         normalized_model="gpt-5.1-codex-mini",
@@ -26,7 +35,10 @@ def test_reasoning_config_clamps_codex_mini() -> None:
 
 
 def test_reasoning_config_rewrites_minimal_for_codex() -> None:
-    """Given a minimal effort codex request, when applied, then effort becomes low."""
+    """Given a minimal effort codex request, when applied, then effort becomes low.
+
+    Ensures the clamping rules upgrade too-low efforts to the supported floor for codex.
+    """
     config = apply_reasoning_config(
         original_model="gpt-5.1-codex-minimal",
         normalized_model="gpt-5.1-codex",
@@ -38,7 +50,10 @@ def test_reasoning_config_rewrites_minimal_for_codex() -> None:
 
 
 def test_derive_instructions_filters_legacy_toolchain_prompts() -> None:
-    """Given legacy toolchain prompts, Codex instructions are used and toolchain prompt is removed."""
+    """Given legacy toolchain prompts, when deriving instructions, then Codex instructions are kept and legacy prompt is removed.
+
+    Validates system prompt filtering strips legacy toolchain markers while preserving provided instructions and user content.
+    """
     instructions, filtered_messages = derive_instructions(
         [
             {"role": "system", "content": "toolchain system prompt content"},
@@ -54,14 +69,20 @@ def test_derive_instructions_filters_legacy_toolchain_prompts() -> None:
 
 
 def test_to_codex_input_user_message() -> None:
-    """Given a user message, when converted, then Codex input schema is produced."""
+    """Given a user message, when converted, then Codex input schema is produced.
+
+    Checks OpenAI user messages map cleanly to Codex message payloads without metadata.
+    """
     msg = {"role": "user", "content": "Hello", "id": "abc123"}
     result = _to_codex_input(msg)
     assert result == {"type": "message", "content": "Hello", "role": "user"}
 
 
 def test_to_codex_input_tool_call() -> None:
-    """Given a tool call message, when converted, then function_call schema is emitted."""
+    """Given a tool call message, when converted, then function_call schema is emitted.
+
+    Verifies tool_calls payloads are normalized with JSON-string arguments and correct type.
+    """
     msg = {"role": "assistant", "tool_calls": [{"name": "foo", "arguments": {"x": 1}}]}
     result = _to_codex_input(msg)
 
@@ -71,7 +92,10 @@ def test_to_codex_input_tool_call() -> None:
 
 
 def test_to_codex_input_tool_role_output() -> None:
-    """Given a tool role output, when converted, then function_call_output schema is emitted."""
+    """Given a tool role output, when converted, then function_call_output schema is emitted.
+
+    Ensures tool role responses become function_call_output entries with preserved IDs and content.
+    """
     msg = {"role": "tool", "tool_call_id": "call-1", "content": {"foo": "bar"}}
 
     result = _to_codex_input(msg)

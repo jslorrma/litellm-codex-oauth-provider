@@ -1,4 +1,7 @@
-"""Tests for the provider module."""
+"""Given Codex configuration and mocked dependencies, when the provider handles requests,
+
+then it builds payloads, filters options, and normalizes responses as expected.
+"""
 
 from __future__ import annotations
 
@@ -74,7 +77,10 @@ def mock_openai_response() -> dict:
 # TESTS
 # =============================================================================
 def test_provider_init(provider: CodexAuthProvider) -> None:
-    """Given a new provider, when constructed, then base URL and caches are initialized."""
+    """Given a new provider, when constructed, then base URL and caches are initialized.
+
+    Confirms default construction points at the codex responses endpoint and starts with empty token cache.
+    """
     assert isinstance(provider, CodexAuthProvider)
     assert provider.base_url == f"{constants.CODEX_API_BASE_URL.rstrip('/')}/codex"
     assert provider.cached_token is None
@@ -82,7 +88,10 @@ def test_provider_init(provider: CodexAuthProvider) -> None:
 
 
 def test_get_bearer_token_cache_miss(mocker: MockerFixture, provider: CodexAuthProvider) -> None:
-    """Given no cached token, when get_bearer_token runs, then it fetches and returns a token."""
+    """Given no cached token, when get_bearer_token runs, then it fetches and returns a token.
+
+    Verifies auth context lookup executes, token is cached, and account_id is captured.
+    """
     mock_get_context = mocker.patch(
         "litellm_codex_oauth_provider.provider.get_auth_context",
         return_value=AuthContext(access_token="test.token", account_id="acct-1"),
@@ -96,37 +105,9 @@ def test_get_bearer_token_cache_miss(mocker: MockerFixture, provider: CodexAuthP
 def test_get_bearer_token_expired_then_refreshed(
     mocker: MockerFixture, provider: CodexAuthProvider
 ) -> None:
-    """Given an expired token, when refresh succeeds, then a new token is returned.
+    """Given an expired token, when refresh succeeds, then a new token and account ID are cached.
 
-    This test validates the complete token refresh workflow in the CodexAuthProvider.
-    When an access token expires, the provider should automatically attempt to refresh
-    it using the refresh token, and if successful, update both the cached token and
-    account ID for subsequent requests.
-
-    The test simulates a realistic refresh scenario:
-    1. First authentication attempt fails with expired token error
-    2. Provider automatically triggers token refresh mechanism
-    3. Refresh operation succeeds and returns new valid token
-    4. Provider caches the new token and updates account ID
-    5. Subsequent requests can use the refreshed credentials
-
-    This test is critical because:
-    - Token refresh is essential for maintaining long-lived sessions
-    - Users shouldn't need to manually re-authenticate when tokens expire
-    - The provider must handle both token refresh success and failure cases
-    - Account ID must be updated alongside the new token for consistency
-    - The refresh mechanism must be transparent to the user
-
-    The test ensures that the authentication system:
-    - Properly detects expired tokens and initiates refresh
-    - Successfully obtains new tokens via refresh mechanism
-    - Updates both token cache and account ID after refresh
-    - Returns the new valid token for immediate use
-    - Maintains authentication state consistency across the provider
-
-    Args:
-        mocker: Pytest fixture for mocking external dependencies.
-        provider: CodexAuthProvider instance for testing token refresh logic.
+    Ensures a first expired-token failure triggers refresh, leading to updated credentials and account metadata.
     """
     # First call raises expired error, second call (after refresh) succeeds
     mocker.patch(
@@ -148,37 +129,9 @@ def test_get_bearer_token_expired_then_refreshed(
 def test_get_bearer_token_expired_refresh_fails(
     mocker: MockerFixture, provider: CodexAuthProvider
 ) -> None:
-    """Given an expired token, when refresh fails, then the original expiry error is raised.
+    """Given an expired token, when refresh fails, then the original expiry error bubbles up.
 
-    This test validates the error handling behavior when token refresh fails. In
-    production environments, refresh operations can fail due to various reasons such
-    as network issues, invalid refresh tokens, or server-side problems. The provider
-    must handle these failures gracefully and propagate the appropriate error.
-
-    The test simulates a refresh failure scenario:
-    1. Initial authentication attempt fails with expired token error
-    2. Provider attempts to refresh the token using the refresh mechanism
-    3. Refresh operation fails with a refresh-specific error
-    4. Provider should propagate the original expiry error, not the refresh error
-    5. This ensures consistent error handling and prevents confusion about the root cause
-
-    This test is important because:
-    - Refresh failures should not mask the original authentication problem
-    - Users need clear feedback about why authentication is failing
-    - The system must fail safely without leaving inconsistent state
-    - Error propagation should maintain the original error context
-    - Different error types help users understand and resolve issues appropriately
-
-    The test ensures that the authentication system:
-    - Properly attempts token refresh when tokens expire
-    - Handles refresh failures without crashing or hanging
-    - Preserves the original error context for debugging
-    - Provides consistent error types regardless of refresh outcome
-    - Maintains system stability even when refresh operations fail
-
-    Args:
-        mocker: Pytest fixture for mocking external dependencies.
-        provider: CodexAuthProvider instance for testing error handling.
+    Confirms refresh errors do not mask the initial CodexAuthTokenExpiredError surfaced to callers.
     """
     mocker.patch(
         "litellm_codex_oauth_provider.provider.get_auth_context",
@@ -201,44 +154,9 @@ def test_completion_success(
     provider: CodexAuthProvider,
     mock_openai_response: dict,
 ) -> None:
-    """Given valid auth and API response, completion returns the expected payload.
+    """Given valid auth and API response, when completion runs, then a ModelResponse with expected payload and headers is returned.
 
-    This test validates the complete completion workflow in the CodexAuthProvider,
-    ensuring that when all components work correctly, the provider can successfully
-    process a completion request and return a properly formatted ModelResponse.
-
-    The test simulates a successful completion scenario:
-    1. Provider receives a completion request with messages and model
-    2. Authentication context is retrieved and validated
-    3. Request is dispatched to the API with proper headers and payload
-    4. API response is received and transformed to ModelResponse format
-    5. Provider returns a complete ModelResponse with choices, usage, and metadata
-
-    Key validation points:
-    - **Authentication**: Verifies that get_auth_context is called with proper credentials
-    - **Request Dispatch**: Ensures _dispatch_response_request receives correct payload and headers
-    - **Response Format**: Validates that the returned object is a proper ModelResponse
-    - **Content Preservation**: Confirms message content is correctly extracted and preserved
-    - **Header Injection**: Checks that authentication headers are properly added to requests
-
-    This test is critical because:
-    - Completion is the primary functionality of the authentication provider
-    - The provider must correctly transform between OpenAI and Codex formats
-    - Authentication must work seamlessly with the completion process
-    - Response transformation must preserve all important data
-    - The provider must handle the complete request lifecycle correctly
-
-    The test ensures that the authentication system:
-    - Successfully authenticates API requests with proper headers
-    - Correctly transforms request format from OpenAI to Codex
-    - Properly handles API responses and transforms them back to LiteLLM format
-    - Returns complete ModelResponse objects with all required fields
-    - Maintains data integrity throughout the transformation process
-
-    Args:
-        mocker: Pytest fixture for mocking external dependencies.
-        provider: CodexAuthProvider instance for testing completion logic.
-        mock_openai_response: Fixture providing a mock API response for testing.
+    Validates the full sync path: auth resolution, payload build, dispatch invocation, and response normalization into LiteLLM structures.
     """
     mocker.patch(
         "litellm_codex_oauth_provider.provider.get_auth_context",
@@ -275,7 +193,10 @@ def test_completion_forwards_supported_kwargs(
     provider: CodexAuthProvider,
     mock_openai_response: dict,
 ) -> None:
-    """Given optional LiteLLM kwargs, completion forwards supported params."""
+    """Given optional LiteLLM kwargs, when completion runs, then supported params forward and unsupported are dropped.
+
+    Confirms payload filtering keeps metadata and tool options while stripping Codex-unsupported fields like temperature or max_tokens.
+    """
     mocker.patch(
         "litellm_codex_oauth_provider.provider.get_auth_context",
         return_value=AuthContext(access_token="test.token", account_id="acct-1"),
@@ -309,7 +230,10 @@ def test_completion_prepends_bridge_when_tools_present(
     provider: CodexAuthProvider,
     mock_openai_response: dict,
 ) -> None:
-    """Given tools, completion prepends the bridge prompt and forwards tools."""
+    """Given tools, when completion builds payload, then the tool bridge is prepended and tools are forwarded.
+
+    Ensures bridge prompt precedes user content and tool definitions remain intact in the payload.
+    """
     mocker.patch(
         "litellm_codex_oauth_provider.provider.get_auth_context",
         return_value=AuthContext(access_token="test.token", account_id="acct-1"),
@@ -352,7 +276,10 @@ def test_completion_prepends_bridge_when_tools_present(
 
 
 def test_completion_raises_on_missing_tool_name(provider: CodexAuthProvider) -> None:
-    """Given a tool without function name, when building payload, then a clear error is raised."""
+    """Given a tool without function name, when building payload, then a ValueError is raised.
+
+    Confirms schema validation blocks tools lacking the required function.name field.
+    """
     with pytest.raises(ValueError, match=r"function\.name"):
         provider._normalize_tools(  # noqa: SLF001
             [{"type": "function", "function": {"description": "missing name"}}]
@@ -360,7 +287,10 @@ def test_completion_raises_on_missing_tool_name(provider: CodexAuthProvider) -> 
 
 
 def test_tool_normalization_strips_type(provider: CodexAuthProvider) -> None:
-    """Given a tool with an explicit type, when normalized, then type is removed for Codex."""
+    """Given a tool with explicit type, when normalized, then the type is coerced to function and name is preserved.
+
+    Verifies normalization enforces function tool type even when callers specify other values.
+    """
     tools = provider._normalize_tools(  # noqa: SLF001
         [
             {
@@ -380,7 +310,10 @@ def test_completion_does_not_add_bridge_without_tools(
     provider: CodexAuthProvider,
     mock_openai_response: dict,
 ) -> None:
-    """Given no tools, when completion runs, then bridge prompt is omitted."""
+    """Given no tools, when completion runs, then the bridge prompt is omitted.
+
+    Checks the input array contains only user content when tool support is not requested.
+    """
     mocker.patch(
         "litellm_codex_oauth_provider.provider.get_auth_context",
         return_value=AuthContext(access_token="test.token", account_id="acct-1"),
@@ -400,7 +333,10 @@ def test_completion_does_not_add_bridge_without_tools(
 
 
 def test_completion_http_error(mocker: MockerFixture, provider: CodexAuthProvider) -> None:
-    """Given an HTTP failure, when completion is called, then a RuntimeError is raised."""
+    """Given an HTTP failure, when completion is called, then a RuntimeError surfaces.
+
+    Ensures dispatch errors propagate to callers instead of being swallowed.
+    """
     mocker.patch(
         "litellm_codex_oauth_provider.provider.get_auth_context",
         return_value=AuthContext(access_token="test.token", account_id="acct-1"),
@@ -422,7 +358,10 @@ def test_acompletion_success(
     provider: CodexAuthProvider,
     mock_openai_response: dict,
 ) -> None:
-    """Given valid auth and API response, awaiting acompletion yields a ModelResponse."""
+    """Given valid auth and API response, when awaiting acompletion, then a ModelResponse is returned.
+
+    Checks the async path mirrors sync behavior and returns normalized content.
+    """
     mocker.patch(
         "litellm_codex_oauth_provider.provider.get_auth_context",
         return_value=AuthContext(access_token="test.token", account_id="acct-1"),
@@ -442,7 +381,10 @@ def test_acompletion_success(
 
 
 def test_convert_sse_to_json() -> None:
-    """Given buffered SSE data, when converted, then the response payload is extracted."""
+    """Given buffered SSE data, when converted, then the response payload is extracted.
+
+    Validates buffered event-stream text reduces to the final response mapping.
+    """
     payload = (
         'data: {"type": "response.done", "response": {"id": "1", "choices": '
         '[{"index":0,"message":{"role":"assistant","content":"Hello"}}]}}\n'
@@ -455,7 +397,10 @@ def test_convert_sse_to_json() -> None:
 
 
 def test_transform_response(mock_openai_response: dict) -> None:
-    """Given an OpenAI-style response, transform_response mirrors input values."""
+    """Given an OpenAI-style response, when transformed, then input values are mirrored.
+
+    Ensures baseline transformation preserves IDs, model, message content, and usage totals.
+    """
     result = transform_response(mock_openai_response, "gpt-5.1-codex-max")
 
     assert isinstance(result, ModelResponse)
@@ -468,7 +413,10 @@ def test_transform_response(mock_openai_response: dict) -> None:
 
 
 def test_transform_response_with_tool_calls() -> None:
-    """Given a tool-calling response, transform_response preserves tool calls."""
+    """Given a tool-calling response, when transformed, then tool calls are preserved.
+
+    Verifies both tool_calls and function_call fields map into LiteLLM tool structures.
+    """
     response = {
         "response": {
             "id": "chatcmpl-tool",
@@ -517,7 +465,10 @@ def test_transform_response_with_tool_calls() -> None:
 
 
 def test_transform_response_with_top_level_tool_calls() -> None:
-    """Given Codex-style tool calls (name/arguments at top level), then tool calls are parsed."""
+    """Given Codex-style top-level tool calls, when transformed, then tool calls are parsed.
+
+    Confirms top-level name/arguments payloads are normalized to function tool calls.
+    """
     response = {
         "response": {
             "id": "chatcmpl-tool",
@@ -558,7 +509,10 @@ def test_transform_response_with_top_level_tool_calls() -> None:
 
 
 def test_transform_response_falls_back_to_output() -> None:
-    """Given empty content but output field, transform_response derives content from output."""
+    """Given empty content but output field, when transformed, then content derives from output.
+
+    Ensures output fragments supply message content when the message content is blank.
+    """
     response = {
         "response": {
             "id": "chatcmpl-output",
@@ -587,7 +541,10 @@ def test_transform_response_falls_back_to_output() -> None:
 
 
 def test_transform_response_with_function_call_output() -> None:
-    """Given function_call output items, transform_response emits tool_calls."""
+    """Given function_call output items, when transformed, then tool_calls are emitted.
+
+    Checks output-only function calls become tool_calls with tool_calls finish_reason.
+    """
     response = {
         "response": {
             "id": "chatcmpl-fc",
@@ -623,7 +580,10 @@ def test_transform_response_with_function_call_output() -> None:
 
 
 def test_streaming_wraps_completion(mocker: MockerFixture, provider: CodexAuthProvider) -> None:
-    """Given streaming call, completion result is wrapped in CustomStreamWrapper."""
+    """Given a streaming call, when wrapping completion, then a CustomStreamWrapper yields the chunk.
+
+    Confirms the streaming helper delegates to completion and produces an iterable chunk wrapper.
+    """
 
     def noop(*_args: object, **_kwargs: object) -> None:
         return None
