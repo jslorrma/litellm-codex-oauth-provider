@@ -129,7 +129,7 @@ def _extract_bearer_token() -> str:
     expires_at = token_data.get("expires_at")
     if expires_at and expires_at < time.time():
         raise CodexAuthTokenExpiredError(
-            "Codex OAuth token expired. Please run 'codex login' to refresh."
+            "Codex OAuth token has expired. Please run 'codex login' to refresh your authentication and get a new token."
         )
 
     return access_token
@@ -190,10 +190,11 @@ def get_auth_context() -> AuthContext:
     ------
     CodexAuthFileNotFoundError
         If the Codex CLI auth.json file is not found.
+        Please run 'codex login' to authenticate first.
     CodexAuthTokenError
         If there's an issue with token format or decoding.
     CodexAuthTokenExpiredError
-        If the access token has expired.
+        If the access token has expired. Please run 'codex login' to refresh.
 
     Examples
     --------
