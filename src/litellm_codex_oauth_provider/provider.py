@@ -30,13 +30,167 @@ from . import constants
 from .adapter import transform_response
 from .auth import _decode_account_id, get_auth_context
 from .exceptions import CodexAuthTokenExpiredError
-from .http_client import SimpleCodexClient
+from .http_client import CodexAPIClient
 from .model_map import _strip_provider_prefix, normalize_model
 from .prompts import DEFAULT_INSTRUCTIONS, build_tool_bridge_message, derive_instructions
 from .reasoning import apply_reasoning_config
 from .remote_resources import fetch_codex_instructions
 
 logger = logging.getLogger(__name__)
+
+
+# Internal utility functions for pure logic operations
+def _normalize_model(model: str) -> str:
+    """Normalize model name for Codex API.
+
+    Parameters
+    ----------
+    model : str
+        Input model string (may include provider prefixes)
+
+    Returns
+    -------
+    str
+        Normalized model name for Codex API
+    """
+    return normalize_model(_strip_provider_prefix(model))
+
+
+def _prepare_messages(
+    messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
+    """Prepare messages with optional tool bridge injection.
+
+    Parameters
+    ----------
+    messages : list[dict[str, Any]]
+        Chat messages provided by the caller
+    tools : list[dict[str, Any]] | None
+        Normalized tool definitions
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Input message list ready for inclusion in the `/responses` payload
+    """
+    input_messages = list(messages)
+    if tools:
+        input_messages = [build_tool_bridge_message(), *input_messages]
+    return input_messages
+
+
+def _build_payload(
+    model: str,
+    instructions: str,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Build the Codex responses API payload.
+
+    Parameters
+    ----------
+    model : str
+        Normalized Codex model identifier
+    instructions : str
+        Instruction string derived from system/user prompts
+    messages : list[dict[str, Any]]
+        Chat messages prepared for Codex
+    tools : list[dict[str, Any]] | None
+        Normalized tool definitions
+    **kwargs : Any
+        Additional completion parameters
+
+    Returns
+    -------
+    dict[str, Any]
+        Fully prepared payload ready for dispatch to `/responses`
+    """
+    payload = {
+        "model": model,
+        "input": _prepare_messages(messages, tools),
+        "instructions": instructions or DEFAULT_INSTRUCTIONS,
+        "include": [constants.REASONING_INCLUDE_TARGET],
+        "store": False,
+    }
+
+    # Add tools if provided
+    if tools:
+        payload["tools"] = tools
+
+    # Add reasoning config
+    reasoning_config = apply_reasoning_config(
+        original_model=_strip_provider_prefix(model),
+        normalized_model=model,
+        reasoning_effort=kwargs.get("reasoning_effort"),
+        verbosity=kwargs.get("verbosity"),
+    )
+    payload.update(reasoning_config)
+
+    # Add basic passthrough options
+    optional_params = kwargs.get("optional_params", {}) or {}
+    passthrough = {
+        "metadata": optional_params.get("metadata"),
+        "user": optional_params.get("user"),
+    }
+    payload.update({k: v for k, v in passthrough.items() if v is not None})
+
+    return payload
+
+
+def _normalize_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
+    """Normalize tool definitions to OpenAI-compliant schema.
+
+    Simplified version that handles the basic case without excessive validation.
+
+    Parameters
+    ----------
+    tools : list[dict[str, Any]] | None
+        Raw tool definitions supplied to LiteLLM
+
+    Returns
+    -------
+    list[dict[str, Any]] | None
+        Normalized tool list or None when no tools are provided
+
+    Raises
+    ------
+    ValueError
+        If tool definitions are not provided as a list or required names are missing
+    """
+    if tools is None:
+        return None
+
+    if not isinstance(tools, list):
+        raise ValueError("tools must be a list of tool definitions.")
+
+    normalized = []
+    for tool in tools:
+        if not isinstance(tool, Mapping):
+            normalized.append(tool)
+            continue
+
+        tool_dict = dict(tool)
+        function_payload = tool_dict.pop("function", {})
+
+        if isinstance(function_payload, Mapping) and function_payload:
+            name = function_payload.get("name")
+            if not name:
+                raise ValueError("Each tool must include function.name")
+
+            tool_dict.setdefault("name", name)
+            tool_dict.setdefault("description", function_payload.get("description"))
+            tool_dict.setdefault("parameters", function_payload.get("parameters", {}))
+            tool_dict.setdefault("strict", function_payload.get("strict"))
+            tool_dict.setdefault("type", "function")
+        elif not tool_dict.get("name"):
+            raise ValueError("Each tool must include name")
+        else:
+            tool_dict.setdefault("type", "function")
+
+        normalized.append(tool_dict)
+
+    return normalized
 
 
 class CodexAuthProvider(CustomLLM):
@@ -98,8 +252,8 @@ class CodexAuthProvider(CustomLLM):
         # Resolve base URL
         self.base_url = constants.CODEX_API_BASE_URL.rstrip("/") + "/codex"
 
-        # Initialize simple HTTP client
-        self._http_client = SimpleCodexClient(
+        # Initialize HTTP client
+        self._http_client = CodexAPIClient(
             token_provider=self.get_bearer_token,
             account_id_provider=self._resolve_account_id,
             base_url=self.base_url,
@@ -133,59 +287,6 @@ class CodexAuthProvider(CustomLLM):
         if self._cached_token:
             return _decode_account_id(self._cached_token)
         return None
-
-    def _normalize_model(self, model: str) -> str:
-        """Normalize model name for Codex API."""
-        return normalize_model(_strip_provider_prefix(model))
-
-    def _prepare_messages(
-        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
-    ) -> list[dict[str, Any]]:
-        """Prepare messages with optional tool bridge injection."""
-        input_messages = list(messages)
-        if tools:
-            input_messages = [build_tool_bridge_message(), *input_messages]
-        return input_messages
-
-    def _build_payload(
-        self,
-        model: str,
-        instructions: str,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        **kwargs: Any,
-    ) -> dict[str, Any]:
-        """Build the Codex responses API payload."""
-        payload = {
-            "model": model,
-            "input": self._prepare_messages(messages, tools),
-            "instructions": instructions or DEFAULT_INSTRUCTIONS,
-            "include": [constants.REASONING_INCLUDE_TARGET],
-            "store": False,
-        }
-
-        # Add tools if provided
-        if tools:
-            payload["tools"] = tools
-
-        # Add reasoning config
-        reasoning_config = apply_reasoning_config(
-            original_model=_strip_provider_prefix(model),
-            normalized_model=model,
-            reasoning_effort=kwargs.get("reasoning_effort"),
-            verbosity=kwargs.get("verbosity"),
-        )
-        payload.update(reasoning_config)
-
-        # Add basic passthrough options
-        optional_params = kwargs.get("optional_params", {}) or {}
-        passthrough = {
-            "metadata": optional_params.get("metadata"),
-            "user": optional_params.get("user"),
-        }
-        payload.update({k: v for k, v in passthrough.items() if v is not None})
-
-        return payload
 
     def _dispatch_request(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Dispatch request using the simple HTTP client."""
@@ -241,10 +342,10 @@ class CodexAuthProvider(CustomLLM):
         # Extract tools
         optional_params = kwargs.get("optional_params", {}) or {}
         tools = kwargs.get("tools") or optional_params.get("tools")
-        normalized_tools = self._normalize_tools(tools) if tools else None
+        normalized_tools = _normalize_tools(tools) if tools else None
 
         # Build payload
-        payload = self._build_payload(
+        payload = _build_payload(
             model=normalized_model,
             instructions=instructions,
             messages=prepared_messages,
@@ -280,10 +381,10 @@ class CodexAuthProvider(CustomLLM):
         # Extract tools
         optional_params = kwargs.get("optional_params", {}) or {}
         tools = kwargs.get("tools") or optional_params.get("tools")
-        normalized_tools = self._normalize_tools(tools) if tools else None
+        normalized_tools = _normalize_tools(tools) if tools else None
 
         # Build payload
-        payload = self._build_payload(
+        payload = _build_payload(
             model=normalized_model,
             instructions=instructions,
             messages=prepared_messages,
@@ -370,46 +471,7 @@ class CodexAuthProvider(CustomLLM):
             custom_llm_provider="codex",
         )
 
-    @staticmethod
-    def _normalize_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
-        """Normalize tool definitions to OpenAI-compliant schema.
-
-        Simplified version that handles the basic case without excessive validation.
-        """
-        if tools is None:
-            return None
-
-        if not isinstance(tools, list):
-            raise ValueError("tools must be a list of tool definitions.")
-
-        normalized = []
-        for tool in tools:
-            if not isinstance(tool, Mapping):
-                normalized.append(tool)
-                continue
-
-            tool_dict = dict(tool)
-            function_payload = tool_dict.pop("function", {})
-
-            if isinstance(function_payload, Mapping) and function_payload:
-                name = function_payload.get("name")
-                if not name:
-                    raise ValueError("Each tool must include function.name")
-
-                tool_dict.setdefault("name", name)
-                tool_dict.setdefault("description", function_payload.get("description"))
-                tool_dict.setdefault("parameters", function_payload.get("parameters", {}))
-                tool_dict.setdefault("strict", function_payload.get("strict"))
-                tool_dict.setdefault("type", "function")
-            elif not tool_dict.get("name"):
-                raise ValueError("Each tool must include name")
-            else:
-                tool_dict.setdefault("type", "function")
-
-            normalized.append(tool_dict)
-
-        return normalized
+    # Global instance for LiteLLM compatibility
 
 
-# Global instance for LiteLLM compatibility
 codex_auth_provider = CodexAuthProvider()
