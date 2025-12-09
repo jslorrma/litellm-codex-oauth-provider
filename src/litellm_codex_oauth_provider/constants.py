@@ -1,4 +1,83 @@
-"""Constants for the LiteLLM Codex OAuth Provider."""
+"""Constants for the LiteLLM Codex OAuth Provider.
+
+This module defines all configuration constants, default values, and system parameters
+used throughout the Codex OAuth provider. Constants are organized by functional area
+for easy maintenance and configuration.
+
+The constants system includes:
+- Default configuration values and paths
+- API endpoint URLs and headers
+- Feature flags and mode settings
+- Cache configuration and TTL values
+- Token management parameters
+
+Configuration Categories
+------------------------
+1. **Authentication**: Auth file paths and token settings
+2. **API Configuration**: Base URLs, endpoints, and headers
+3. **Cache Settings**: Cache directories, TTL, and metadata
+4. **Feature Flags**: Mode settings and debug options
+5. **Token Management**: Cache buffers and expiry times
+
+Default Paths
+-------------
+- **Auth File**: `~/.codex/auth.json` (configurable via CODEX_AUTH_FILE)
+- **Cache Directory**: `~/.opencode/cache` (configurable via CODEX_CACHE_DIR)
+- **Cache Metadata**: JSON files with ETag and timestamp information
+
+API Configuration
+-----------------
+- **Base URL**: `https://chatgpt.com/backend-api`
+- **Responses Endpoint**: `/codex/responses`
+- **GitHub Releases**: `https://api.github.com/repos/openai/codex/releases/latest`
+- **OAuth Token**: `https://auth.openai.com/oauth/token`
+
+Headers and Features
+--------------------
+- **Beta Features**: `OpenAI-Beta: responses=experimental`
+- **Originator**: `originator: codex_cli_rs`
+- **Account ID**: `chatgpt-account-id` header
+- **Reasoning**: `reasoning.encrypted_content` inclusion
+
+Examples
+--------
+Accessing configuration:
+
+>>> from litellm_codex_oauth_provider import constants
+>>> print(constants.CODEX_API_BASE_URL)
+'https://chatgpt.com/backend-api'
+>>> print(constants.DEFAULT_CODEX_AUTH_FILE)
+PosixPath('~/.codex/auth.json')
+
+Environment variable overrides:
+
+>>> import os
+>>> os.environ["CODEX_AUTH_FILE"] = "/custom/path/auth.json"
+>>> from litellm_codex_oauth_provider import constants
+>>> print(constants.DEFAULT_CODEX_AUTH_FILE)
+PosixPath('/custom/path/auth.json')
+
+Cache configuration:
+
+>>> print(f"Cache TTL: {constants.CODEX_INSTRUCTIONS_CACHE_TTL_SECONDS} seconds")
+Cache TTL: 900 seconds
+>>> print(f"Token buffer: {constants.TOKEN_CACHE_BUFFER_SECONDS} seconds")
+Token buffer: 300 seconds
+
+Notes
+-----
+- All paths use pathlib.Path for cross-platform compatibility
+- Environment variables override default values
+- Cache TTL is set to 15 minutes for instructions
+- Token cache buffer is 5 minutes before expiry
+- Debug logging controlled via CODEX_DEBUG environment variable
+
+See Also
+--------
+- `auth`: Authentication using auth file constants
+- `remote_resources`: Cache management using cache constants
+- `openai_client`: API configuration using endpoint constants
+"""
 
 from __future__ import annotations
 
@@ -20,10 +99,6 @@ else:
 # Cache paths
 CODEX_CACHE_DIR = Path(os.getenv("CODEX_CACHE_DIR", Path.home() / ".opencode" / "cache"))
 CODEX_CACHE_META_SUFFIX = "-meta.json"
-
-# Feature flags
-CODEX_MODE_ENV = "CODEX_MODE"
-DEFAULT_CODEX_MODE = True
 
 # ChatGPT backend (Codex) endpoints and headers
 CODEX_API_BASE_URL = "https://chatgpt.com/backend-api"

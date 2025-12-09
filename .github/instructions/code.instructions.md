@@ -58,6 +58,100 @@ Use the provided Modern Python Style Guide to write or review Python code with a
       - Document exceptions and edge cases
       - Maintain consistency across the project
 
+## Docstring Guidelines by Scope
+
+### Module Docstrings
+
+**Requirements:**
+- Comprehensive overview of module purpose and scope
+- Architecture explanation for complex modules
+- Usage examples showing common patterns
+- Cross-references to related modules
+- Installation/dependency information if relevant
+
+**Length Guidelines:**
+- **Core modules**: Comprehensive (200-400 words typical)
+- **Utility modules**: Detailed (100-250 words typical)
+- **Simple modules**: Moderate (50-150 words typical)
+
+**Content Structure:**
+- One-line summary
+- Extended description of purpose and functionality
+- Key features and capabilities
+- Usage examples
+- Architecture/flow diagrams if complex
+- Dependencies and requirements
+- Related modules and functions
+- Important notes and caveats
+
+### Function Docstring Rules
+
+**Public API Functions (used by external users):**
+- Rich, comprehensive docstrings focused on usage
+- Clear examples showing common use cases
+- Parameters and returns clearly documented
+- Usage-focused rather than implementation-focused
+- Easy to understand for end users
+
+**Internal Functions (used across modules):**
+- Detailed context and explanations for maintainers
+- Implementation notes and caveats
+- Cross-references to related functions
+- Focus on developer understanding
+- More technical detail than public APIs
+
+**Important Helper Functions (frequently used, critical functionality):**
+- Details proportional to complexity and importance
+- Clear explanation of functionality
+- Usage context and dependencies
+- Error handling and edge cases
+
+**Simple Helper Functions (private, single-purpose):**
+- One-line summary is often sufficient
+- Include Parameters and Returns sections for all functions used within the same module, even if private. Only skip these sections for truly internal or nested functions that are not exported and used exclusively within their immediate scope.
+- Only add detail if function is complex or has important behavior
+- Avoid over-documentation for trivial functions
+
+### Docstring Length Guidelines
+
+**Module Docstrings:**
+- **Core modules**: Comprehensive (200-400 words typical)
+- **Utility modules**: Detailed (100-250 words typical)
+- **Simple modules**: Moderate (50-150 words typical)
+
+**Function Docstrings:**
+- **Public APIs**: Comprehensive (100-300 words typical)
+- **Internal APIs**: Detailed (50-150 words typical)
+- **Important helpers**: Moderate (25-100 words typical)
+- **Simple helpers**: Concise (5-25 words typical)
+
+### Content Requirements by Scope
+
+**Module Docstrings Must Include:**
+- Summary, Extended Description, Examples, Notes, See Also
+- Architecture overview for complex modules
+- Usage patterns and common workflows
+
+**Function Docstrings Must Include:**
+- Public APIs: Summary, Parameters, Returns, Examples, Notes
+- Internal APIs: Summary, Parameters, Returns, Notes, See Also
+- Important helpers: Summary, Parameters, Returns, Notes
+- Simple helpers: Summary, Parameters, Returns (only truly internal/nested functions can skip Parameters/Returns)
+
+**Note**: Parameters and Returns sections should only be skipped by very simple functions that are used exclusively within a single module or are nested functions. All other functions must include these sections.
+
+**Should Include:**
+- Error conditions and exceptions
+- Usage examples for non-obvious functions
+- Cross-references to related functions
+- Implementation caveats and limitations
+
+**Avoid:**
+- Over-documentation of simple helper functions
+- Implementation details in public API docs
+- Redundant information already in type hints
+- Examples that don't add value
+
 7. **Utilize Tooling**:
     - Format code with `ruff format`, apply a 100-character line length limit, and use `ruff` for linting.
 

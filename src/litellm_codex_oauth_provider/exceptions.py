@@ -1,4 +1,29 @@
-"""Custom exceptions for the LiteLLM Codex OAuth Provider."""
+"""Custom exceptions for the LiteLLM Codex OAuth Provider.
+
+This module defines a hierarchy of custom exceptions for handling various error
+conditions that may occur during Codex authentication and API operations.
+
+The exception hierarchy provides:
+- Base exception for all Codex-related errors
+- Specific exceptions for different error categories
+- Detailed error messages with actionable guidance
+- Proper exception chaining for debugging
+
+Exception Hierarchy
+-------------------
+- **CodexAuthError**: Base exception for all authentication errors
+  - **CodexAuthFileNotFoundError**: Auth file missing
+  - **CodexAuthTokenError**: General token issues
+    - **CodexAuthTokenExpiredError**: Token has expired
+  - **CodexAuthRefreshError**: Token refresh failure
+
+Error Categories
+----------------
+- **File System**: Missing or inaccessible auth files
+- **Token Validation**: Invalid, expired, or malformed tokens
+- **Network Issues**: API connectivity and timeout problems
+- **Authentication Flow**: OAuth process failures
+"""
 
 from __future__ import annotations
 

@@ -1,4 +1,7 @@
-"""Integration tests for the LiteLLM Codex OAuth Provider."""
+"""Given LiteLLM registration flows, when the Codex provider is registered, then it becomes
+
+available for completions; skipped tests outline end-to-end usage expectations.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +12,10 @@ from litellm_codex_oauth_provider.provider import codex_auth_provider
 
 
 def test_provider_registration() -> None:
-    """Test that the provider is properly registered with LiteLLM."""
+    """Given a provider registration, when added to LiteLLM, then Codex is available for completions.
+
+    Ensures the custom handler is inserted into LiteLLM's provider map for downstream usage.
+    """
     # Register the custom provider
     litellm.custom_provider_map = [{"provider": "codex", "custom_handler": codex_auth_provider}]
 
@@ -20,11 +26,9 @@ def test_provider_registration() -> None:
 
 @pytest.mark.skip(reason="Requires actual Codex auth and LiteLLM setup")
 def test_direct_usage() -> None:
-    """Test using the provider directly (without proxy).
+    """Given real Codex credentials, when calling completion directly, then the provider returns responses.
 
-    This test requires:
-    1. A valid ~/.codex/auth.json file
-    2. LiteLLM to be installed
+    Documented as a skipped integration check requiring actual auth and network-enabled LiteLLM setup.
     """
     # Register the custom provider
     litellm.custom_provider_map = [{"provider": "codex", "custom_handler": codex_auth_provider}]

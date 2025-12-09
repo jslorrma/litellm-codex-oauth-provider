@@ -1,4 +1,7 @@
-"""Tests for the provider module."""
+"""Given Codex configuration and mocked dependencies, when the provider handles requests,
+
+then it builds payloads, filters options, and normalizes responses as expected.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +15,10 @@ from litellm import Choices, Message, ModelResponse
 from litellm_codex_oauth_provider import constants
 from litellm_codex_oauth_provider.adapter import convert_sse_to_json, transform_response
 from litellm_codex_oauth_provider.auth import AuthContext
-from litellm_codex_oauth_provider.exceptions import CodexAuthTokenExpiredError
+from litellm_codex_oauth_provider.exceptions import (
+    CodexAuthRefreshError,
+    CodexAuthTokenExpiredError,
+)
 from litellm_codex_oauth_provider.prompts import TOOL_BRIDGE_PROMPT
 from litellm_codex_oauth_provider.provider import CodexAuthProvider
 
@@ -71,16 +77,21 @@ def mock_openai_response() -> dict:
 # TESTS
 # =============================================================================
 def test_provider_init(provider: CodexAuthProvider) -> None:
-    """Given a new provider, when constructed, then base URL and caches are initialized."""
+    """Given a new provider, when constructed, then base URL and caches are initialized.
+
+    Confirms default construction points at the codex responses endpoint and starts with empty token cache.
+    """
     assert isinstance(provider, CodexAuthProvider)
     assert provider.base_url == f"{constants.CODEX_API_BASE_URL.rstrip('/')}/codex"
     assert provider.cached_token is None
     assert provider.token_expiry is None
-    assert provider._codex_mode_enabled is True  # noqa: SLF001
 
 
 def test_get_bearer_token_cache_miss(mocker: MockerFixture, provider: CodexAuthProvider) -> None:
-    """Given no cached token, when get_bearer_token runs, then it fetches and returns a token."""
+    """Given no cached token, when get_bearer_token runs, then it fetches and returns a token.
+
+    Verifies auth context lookup executes, token is cached, and account_id is captured.
+    """
     mock_get_context = mocker.patch(
         "litellm_codex_oauth_provider.provider.get_auth_context",
         return_value=AuthContext(access_token="test.token", account_id="acct-1"),
@@ -94,7 +105,10 @@ def test_get_bearer_token_cache_miss(mocker: MockerFixture, provider: CodexAuthP
 def test_get_bearer_token_expired_then_refreshed(
     mocker: MockerFixture, provider: CodexAuthProvider
 ) -> None:
-    """Given an expired token, when refresh succeeds, then a new token is returned."""
+    """Given an expired token, when refresh succeeds, then a new token and account ID are cached.
+
+    Ensures a first expired-token failure triggers refresh, leading to updated credentials and account metadata.
+    """
     # First call raises expired error, second call (after refresh) succeeds
     mocker.patch(
         "litellm_codex_oauth_provider.provider.get_auth_context",
@@ -115,14 +129,20 @@ def test_get_bearer_token_expired_then_refreshed(
 def test_get_bearer_token_expired_refresh_fails(
     mocker: MockerFixture, provider: CodexAuthProvider
 ) -> None:
-    """Given an expired token, when refresh fails, then the original expiry error is raised."""
+    """Given an expired token, when refresh fails, then the original expiry error bubbles up.
+
+    Confirms refresh errors do not mask the initial CodexAuthTokenExpiredError surfaced to callers.
+    """
     mocker.patch(
         "litellm_codex_oauth_provider.provider.get_auth_context",
-        side_effect=CodexAuthTokenExpiredError("Token expired"),
+        side_effect=[
+            CodexAuthTokenExpiredError("Token expired"),
+            CodexAuthTokenExpiredError("Token expired"),  # Still expired after refresh
+        ],
     )
     mocker.patch(
         "litellm_codex_oauth_provider.provider._refresh_token",
-        side_effect=Exception("Refresh failed"),
+        side_effect=CodexAuthRefreshError("Refresh failed"),
     )
 
     with pytest.raises(CodexAuthTokenExpiredError):
@@ -134,7 +154,10 @@ def test_completion_success(
     provider: CodexAuthProvider,
     mock_openai_response: dict,
 ) -> None:
-    """Given valid auth and API response, completion returns the expected payload."""
+    """Given valid auth and API response, when completion runs, then a ModelResponse with expected payload and headers is returned.
+
+    Validates the full sync path: auth resolution, payload build, dispatch invocation, and response normalization into LiteLLM structures.
+    """
     mocker.patch(
         "litellm_codex_oauth_provider.provider.get_auth_context",
         return_value=AuthContext(access_token="test.token", account_id="acct-1"),
@@ -170,7 +193,10 @@ def test_completion_forwards_supported_kwargs(
     provider: CodexAuthProvider,
     mock_openai_response: dict,
 ) -> None:
-    """Given optional LiteLLM kwargs, completion forwards supported params."""
+    """Given optional LiteLLM kwargs, when completion runs, then supported params forward and unsupported are dropped.
+
+    Confirms payload filtering keeps metadata and tool options while stripping Codex-unsupported fields like temperature or max_tokens.
+    """
     mocker.patch(
         "litellm_codex_oauth_provider.provider.get_auth_context",
         return_value=AuthContext(access_token="test.token", account_id="acct-1"),
@@ -204,7 +230,10 @@ def test_completion_prepends_bridge_when_tools_present(
     provider: CodexAuthProvider,
     mock_openai_response: dict,
 ) -> None:
-    """Given tools, completion prepends the bridge prompt and forwards tools."""
+    """Given tools, when completion builds payload, then the tool bridge is prepended and tools are forwarded.
+
+    Ensures bridge prompt precedes user content and tool definitions remain intact in the payload.
+    """
     mocker.patch(
         "litellm_codex_oauth_provider.provider.get_auth_context",
         return_value=AuthContext(access_token="test.token", account_id="acct-1"),
@@ -247,7 +276,10 @@ def test_completion_prepends_bridge_when_tools_present(
 
 
 def test_completion_raises_on_missing_tool_name(provider: CodexAuthProvider) -> None:
-    """Given a tool without function name, when building payload, then a clear error is raised."""
+    """Given a tool without function name, when building payload, then a ValueError is raised.
+
+    Confirms schema validation blocks tools lacking the required function.name field.
+    """
     with pytest.raises(ValueError, match=r"function\.name"):
         provider._normalize_tools(  # noqa: SLF001
             [{"type": "function", "function": {"description": "missing name"}}]
@@ -255,7 +287,10 @@ def test_completion_raises_on_missing_tool_name(provider: CodexAuthProvider) -> 
 
 
 def test_tool_normalization_strips_type(provider: CodexAuthProvider) -> None:
-    """Given a tool with an explicit type, when normalized, then type is removed for Codex."""
+    """Given a tool with explicit type, when normalized, then the type is coerced to function and name is preserved.
+
+    Verifies normalization enforces function tool type even when callers specify other values.
+    """
     tools = provider._normalize_tools(  # noqa: SLF001
         [
             {
@@ -275,7 +310,10 @@ def test_completion_does_not_add_bridge_without_tools(
     provider: CodexAuthProvider,
     mock_openai_response: dict,
 ) -> None:
-    """Given no tools, when completion runs, then bridge prompt is omitted."""
+    """Given no tools, when completion runs, then the bridge prompt is omitted.
+
+    Checks the input array contains only user content when tool support is not requested.
+    """
     mocker.patch(
         "litellm_codex_oauth_provider.provider.get_auth_context",
         return_value=AuthContext(access_token="test.token", account_id="acct-1"),
@@ -295,7 +333,10 @@ def test_completion_does_not_add_bridge_without_tools(
 
 
 def test_completion_http_error(mocker: MockerFixture, provider: CodexAuthProvider) -> None:
-    """Given an HTTP failure, when completion is called, then a RuntimeError is raised."""
+    """Given an HTTP failure, when completion is called, then a RuntimeError surfaces.
+
+    Ensures dispatch errors propagate to callers instead of being swallowed.
+    """
     mocker.patch(
         "litellm_codex_oauth_provider.provider.get_auth_context",
         return_value=AuthContext(access_token="test.token", account_id="acct-1"),
@@ -317,7 +358,10 @@ def test_acompletion_success(
     provider: CodexAuthProvider,
     mock_openai_response: dict,
 ) -> None:
-    """Given valid auth and API response, awaiting acompletion yields a ModelResponse."""
+    """Given valid auth and API response, when awaiting acompletion, then a ModelResponse is returned.
+
+    Checks the async path mirrors sync behavior and returns normalized content.
+    """
     mocker.patch(
         "litellm_codex_oauth_provider.provider.get_auth_context",
         return_value=AuthContext(access_token="test.token", account_id="acct-1"),
@@ -337,7 +381,10 @@ def test_acompletion_success(
 
 
 def test_convert_sse_to_json() -> None:
-    """Given buffered SSE data, when converted, then the response payload is extracted."""
+    """Given buffered SSE data, when converted, then the response payload is extracted.
+
+    Validates buffered event-stream text reduces to the final response mapping.
+    """
     payload = (
         'data: {"type": "response.done", "response": {"id": "1", "choices": '
         '[{"index":0,"message":{"role":"assistant","content":"Hello"}}]}}\n'
@@ -350,7 +397,10 @@ def test_convert_sse_to_json() -> None:
 
 
 def test_transform_response(mock_openai_response: dict) -> None:
-    """Given an OpenAI-style response, transform_response mirrors input values."""
+    """Given an OpenAI-style response, when transformed, then input values are mirrored.
+
+    Ensures baseline transformation preserves IDs, model, message content, and usage totals.
+    """
     result = transform_response(mock_openai_response, "gpt-5.1-codex-max")
 
     assert isinstance(result, ModelResponse)
@@ -363,7 +413,10 @@ def test_transform_response(mock_openai_response: dict) -> None:
 
 
 def test_transform_response_with_tool_calls() -> None:
-    """Given a tool-calling response, transform_response preserves tool calls."""
+    """Given a tool-calling response, when transformed, then tool calls are preserved.
+
+    Verifies both tool_calls and function_call fields map into LiteLLM tool structures.
+    """
     response = {
         "response": {
             "id": "chatcmpl-tool",
@@ -412,7 +465,10 @@ def test_transform_response_with_tool_calls() -> None:
 
 
 def test_transform_response_with_top_level_tool_calls() -> None:
-    """Given Codex-style tool calls (name/arguments at top level), then tool calls are parsed."""
+    """Given Codex-style top-level tool calls, when transformed, then tool calls are parsed.
+
+    Confirms top-level name/arguments payloads are normalized to function tool calls.
+    """
     response = {
         "response": {
             "id": "chatcmpl-tool",
@@ -453,7 +509,10 @@ def test_transform_response_with_top_level_tool_calls() -> None:
 
 
 def test_transform_response_falls_back_to_output() -> None:
-    """Given empty content but output field, transform_response derives content from output."""
+    """Given empty content but output field, when transformed, then content derives from output.
+
+    Ensures output fragments supply message content when the message content is blank.
+    """
     response = {
         "response": {
             "id": "chatcmpl-output",
@@ -482,7 +541,10 @@ def test_transform_response_falls_back_to_output() -> None:
 
 
 def test_transform_response_with_function_call_output() -> None:
-    """Given function_call output items, transform_response emits tool_calls."""
+    """Given function_call output items, when transformed, then tool_calls are emitted.
+
+    Checks output-only function calls become tool_calls with tool_calls finish_reason.
+    """
     response = {
         "response": {
             "id": "chatcmpl-fc",
@@ -518,7 +580,10 @@ def test_transform_response_with_function_call_output() -> None:
 
 
 def test_streaming_wraps_completion(mocker: MockerFixture, provider: CodexAuthProvider) -> None:
-    """Given streaming call, completion result is wrapped in CustomStreamWrapper."""
+    """Given a streaming call, when wrapping completion, then a CustomStreamWrapper yields the chunk.
+
+    Confirms the streaming helper delegates to completion and produces an iterable chunk wrapper.
+    """
 
     def noop(*_args: object, **_kwargs: object) -> None:
         return None

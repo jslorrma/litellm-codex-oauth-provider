@@ -1,4 +1,84 @@
-"""System prompt handling and Codex instruction derivation."""
+r"""System prompt handling and Codex instruction derivation.
+
+This module handles the conversion of OpenAI message formats to Codex input format,
+including system prompt processing, tool call normalization, and instruction derivation.
+
+The prompt system supports:
+- OpenAI to Codex message format conversion
+- System prompt filtering and instruction extraction
+- Tool call normalization and bridge prompt generation
+- Legacy toolchain prompt detection and removal
+- Function call output conversion to Codex schema
+
+Message Processing Pipeline
+---------------------------
+1. **Role-based Processing**: Handle system, user, assistant, and tool messages
+2. **Content Extraction**: Convert various content formats to text
+3. **Tool Normalization**: Convert OpenAI tool calls to Codex format
+4. **System Prompt Handling**: Extract and combine system instructions
+5. **Bridge Prompt Addition**: Add tool bridge for function calling
+
+Supported Message Types
+-----------------------
+- **System Messages**: Converted to Codex instructions
+- **User Messages**: Direct conversion to Codex messages
+- **Assistant Messages**: Preserved with content and tool calls
+- **Tool Messages**: Converted to function_call_output format
+- **Function Calls**: Normalized to Codex function_call schema
+
+Tool Call Handling
+------------------
+The module handles multiple tool call formats:
+- OpenAI format: `{"tool_calls": [{"function": {"name": "...", "arguments": "..."}}]}`
+- Legacy format: `{"function_call": {"name": "...", "arguments": "..."}}`
+- Function output: `{"function_call_output": "..."}`
+
+Examples
+--------
+Message conversion:
+
+>>> from litellm_codex_oauth_provider.prompts import _to_codex_input
+>>> openai_message = {"role": "user", "content": "Hello"}
+>>> codex_input = _to_codex_input(openai_message)
+>>> print(codex_input)
+{'type': 'message', 'content': 'Hello', 'role': 'user'}
+
+Tool call conversion:
+
+>>> tool_message = {"role": "tool", "tool_call_id": "call_123", "content": "Tool result"}
+>>> codex_input = _to_codex_input(tool_message)
+>>> print(codex_input)
+{'type': 'function_call_output', 'output': {'tool_call_id': 'call_123', 'content': 'Tool result'}, 'role': 'assistant'}
+
+Instruction derivation:
+
+>>> from litellm_codex_oauth_provider.prompts import derive_instructions
+>>> messages = [
+...     {"role": "system", "content": "You are a helpful assistant."},
+...     {"role": "user", "content": "Hello"},
+... ]
+>>> instructions, input_messages = derive_instructions(messages, normalized_model="gpt-5.1-codex")
+
+Tool bridge message:
+
+>>> from litellm_codex_oauth_provider.prompts import build_tool_bridge_message
+>>> bridge = build_tool_bridge_message()
+>>> print(bridge["content"][0]["text"][:50])
+'# Codex Tool Bridge\\n\\nYou are an open-source AI coding assistant...'
+
+Notes
+-----
+- System prompts are filtered for legacy toolchain markers
+- Tool bridge prompts are added when tools are present
+- Function calls are normalized to Codex schema
+- Content is coerced to text format for consistency
+- The module provides both individual conversion and batch derivation functions
+
+See Also
+--------
+- `provider`: Main provider using these prompt functions
+- `remote_resources`: Instruction fetching and caching
+"""
 
 from __future__ import annotations
 
@@ -15,10 +95,6 @@ LEGACY_TOOLCHAIN_MARKERS: Final[tuple[str, ...]] = (
     "toolchain::system",
     "legacy toolchain",
 )
-TOOL_REMAP_PROMPT: Final[
-    str
-] = """Tool remapping: emit tool calls using the provided OpenAI tool schema even if previous \
-instructions referenced legacy tool shims."""
 TOOL_BRIDGE_PROMPT: Final[str] = """# Codex Tool Bridge
 
 You are an open-source AI coding assistant with tool support, running behind a developer CLI. \
@@ -28,7 +104,18 @@ the request."""
 
 
 def _coerce_text(content: Any) -> str:
-    """Convert OpenAI content payloads to plain text for inspection."""
+    """Convert OpenAI content payloads to plain text for inspection.
+
+    Parameters
+    ----------
+    content : Any
+        Content payload which may be a string, mapping, iterable, or None.
+
+    Returns
+    -------
+    str
+        Concatenated text representation of the content.
+    """
     if content is None:
         return ""
     if isinstance(content, str):
@@ -42,18 +129,51 @@ def _coerce_text(content: Any) -> str:
 
 
 def _is_toolchain_system_prompt(content: str) -> bool:
-    """Identify legacy toolchain system prompts that should be filtered in Codex mode."""
+    """Identify legacy toolchain system prompts that should be filtered in Codex mode.
+
+    Parameters
+    ----------
+    content : str
+        System prompt content to inspect.
+
+    Returns
+    -------
+    bool
+        ``True`` when the prompt matches known legacy markers.
+    """
     lowered = content.lower()
     return any(marker in lowered for marker in LEGACY_TOOLCHAIN_MARKERS)
 
 
 def _strip_message_metadata(message: dict[str, Any]) -> dict[str, Any]:
-    """Remove identifiers that are not part of the Codex schema."""
+    """Remove identifiers that are not part of the Codex schema.
+
+    Parameters
+    ----------
+    message : dict[str, Any]
+        Message payload possibly containing metadata.
+
+    Returns
+    -------
+    dict[str, Any]
+        Cleaned message without Codex-incompatible metadata fields.
+    """
     return {key: value for key, value in message.items() if key not in {"id", "item_reference"}}
 
 
 def _drop_stray_function_output(message: dict[str, Any]) -> dict[str, Any]:
-    """Remove orphaned function_call_output payloads."""
+    """Remove orphaned function_call_output payloads.
+
+    Parameters
+    ----------
+    message : dict[str, Any]
+        Assistant message that may contain stray ``function_call_output`` fields.
+
+    Returns
+    -------
+    dict[str, Any]
+        Message with stray outputs removed when no matching function call exists.
+    """
     if (
         message.get("role") == "assistant"
         and "function_call_output" in message
@@ -66,13 +186,35 @@ def _drop_stray_function_output(message: dict[str, Any]) -> dict[str, Any]:
 
 
 def _clean_message_payload(message: dict[str, Any]) -> dict[str, Any]:
-    """Normalize message payload by removing Codex-incompatible metadata."""
+    """Normalize message payload by removing Codex-incompatible metadata.
+
+    Parameters
+    ----------
+    message : dict[str, Any]
+        Message payload to clean.
+
+    Returns
+    -------
+    dict[str, Any]
+        Cleaned message ready for Codex conversion.
+    """
     stripped = _strip_message_metadata(message)
     return _drop_stray_function_output(stripped)
 
 
 def _extract_tool_call(message: dict[str, Any]) -> dict[str, Any] | None:
-    """Extract the first tool call from a message."""
+    """Extract the first tool call from a message.
+
+    Parameters
+    ----------
+    message : dict[str, Any]
+        Message payload containing optional `tool_calls`.
+
+    Returns
+    -------
+    dict[str, Any] | None
+        Normalized function call payload or ``None`` when absent.
+    """
     tool_calls = message.get("tool_calls")
     if not tool_calls:
         return None
@@ -90,7 +232,18 @@ def _extract_tool_call(message: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _normalize_function_output(message: dict[str, Any]) -> dict[str, Any] | None:
-    """Convert tool role messages to Codex function_call_output schema."""
+    """Convert tool role messages to Codex function_call_output schema.
+
+    Parameters
+    ----------
+    message : dict[str, Any]
+        Tool role message from OpenAI chat history.
+
+    Returns
+    -------
+    dict[str, Any] | None
+        Codex function_call_output structure or ``None`` if not applicable.
+    """
     if message.get("role") != "tool":
         return None
     tool_call_id = message.get("tool_call_id")
@@ -105,7 +258,18 @@ def _normalize_function_output(message: dict[str, Any]) -> dict[str, Any] | None
 
 
 def _normalize_function_call(message: dict[str, Any]) -> dict[str, Any] | None:
-    """Normalize function call payloads into Codex schema."""
+    """Normalize function call payloads into Codex schema.
+
+    Parameters
+    ----------
+    message : dict[str, Any]
+        Assistant message containing function call information.
+
+    Returns
+    -------
+    dict[str, Any] | None
+        Codex-compatible function call payload or ``None`` when not present.
+    """
     tool_call = _extract_tool_call(message)
     if tool_call:
         return {
@@ -164,7 +328,6 @@ def _to_codex_input(message: dict[str, Any]) -> dict[str, Any]:
 def derive_instructions(
     messages: list[dict[str, Any]],
     *,
-    codex_mode: bool,
     normalized_model: str,
     instructions_text: str | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
@@ -174,12 +337,10 @@ def derive_instructions(
     ----------
     messages : list of dict
         Chat messages to adapt to the Codex schema.
-    codex_mode : bool
-        Whether Codex behaviour is enabled (Codex instructions are applied).
     normalized_model : str
         Normalized model identifier (reserved for future gating).
     instructions_text : str, optional
-        Pre-fetched Codex instructions to prepend. Ignored when ``codex_mode`` is False.
+        Pre-fetched Codex instructions to prepend.
 
     Returns
     -------
@@ -195,7 +356,7 @@ def derive_instructions(
             content = _coerce_text(message.get("content"))
             if not content:
                 continue
-            if codex_mode and _is_toolchain_system_prompt(content):
+            if _is_toolchain_system_prompt(content):
                 continue
             system_parts.append(content)
             continue
@@ -203,9 +364,7 @@ def derive_instructions(
         cleaned = _clean_message_payload(message)
         input_payload.append(_to_codex_input(cleaned))
 
-    base_instructions = instructions_text if codex_mode else TOOL_REMAP_PROMPT
-    if codex_mode and not base_instructions:
-        base_instructions = DEFAULT_INSTRUCTIONS
+    base_instructions = instructions_text or DEFAULT_INSTRUCTIONS
     instructions_parts: list[str] = [base_instructions, *system_parts]
     instructions = "\n\n".join(part for part in instructions_parts if part) or DEFAULT_INSTRUCTIONS
     return instructions, input_payload
