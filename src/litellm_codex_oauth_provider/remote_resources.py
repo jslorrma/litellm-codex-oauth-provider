@@ -137,7 +137,24 @@ def _cache_paths(model_family: str) -> CachePaths:
 
 
 def _load_cache_metadata(paths: CachePaths) -> CacheMetadata:
-    """Load cache metadata from disk, returning defaults on failure."""
+    """Load cache metadata from disk, returning defaults on failure.
+
+    Parameters
+    ----------
+    paths : CachePaths
+        Named tuple containing paths to instruction and metadata files.
+
+    Returns
+    -------
+    CacheMetadata
+        Parsed metadata with etag, tag, last_checked timestamp, and URL.
+        Returns default (all None) values if file is missing or corrupted.
+
+    Notes
+    -----
+    Silently handles JSON decode errors and file I/O exceptions by returning
+    default metadata values, ensuring graceful degradation when cache is invalid.
+    """
     if not paths.metadata.exists():
         return CacheMetadata(etag=None, tag=None, last_checked=None, url=None)
     try:
@@ -153,7 +170,22 @@ def _load_cache_metadata(paths: CachePaths) -> CacheMetadata:
 
 
 def _load_cached_instructions(paths: CachePaths) -> str | None:
-    """Return cached instruction contents if available."""
+    """Return cached instruction contents if available.
+
+    Parameters
+    ----------
+    paths : CachePaths
+        Named tuple containing paths to instruction and metadata files.
+
+    Returns
+    -------
+    str | None
+        Instruction file contents as a string, or None if file doesn't exist.
+
+    Notes
+    -----
+    Only catches FileNotFoundError; other I/O errors propagate to caller.
+    """
     try:
         return paths.instructions.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -167,7 +199,25 @@ def _write_cache(
     metadata: CacheMetadata,
     now: float,
 ) -> None:
-    """Persist instructions and metadata to disk atomically."""
+    """Persist instructions and metadata to disk atomically.
+
+    Parameters
+    ----------
+    paths : CachePaths
+        Named tuple containing paths to instruction and metadata files.
+    instructions : str
+        Instruction content to write to cache.
+    metadata : CacheMetadata
+        Metadata object containing etag, tag, last_checked, and url.
+    now : float
+        Current timestamp (epoch seconds) to use if last_checked is None.
+
+    Notes
+    -----
+    Creates cache directory structure if it doesn't exist. Writes both files
+    sequentially; while not fully atomic across both files, the metadata write
+    is conditional on successful instruction write.
+    """
     last_checked = metadata.last_checked if metadata.last_checked is not None else now
     paths.instructions.parent.mkdir(parents=True, exist_ok=True)
     paths.instructions.write_text(instructions, encoding="utf-8")
@@ -185,7 +235,28 @@ def _write_cache(
 
 
 def _should_use_cache(metadata: CacheMetadata, cached: str | None, now: float) -> bool:
-    """Determine whether cached instructions remain valid based on TTL."""
+    """Determine whether cached instructions remain valid based on TTL.
+
+    Parameters
+    ----------
+    metadata : CacheMetadata
+        Metadata object containing last_checked timestamp.
+    cached : str | None
+        Cached instruction content, or None if not available.
+    now : float
+        Current timestamp (epoch seconds) for TTL comparison.
+
+    Returns
+    -------
+    bool
+        True if cache is fresh and content exists, False otherwise.
+
+    Notes
+    -----
+    Cache is considered valid if both metadata.last_checked and cached content
+    exist, and the elapsed time since last_checked is less than the configured
+    TTL (CODEX_INSTRUCTIONS_CACHE_TTL_SECONDS constant).
+    """
     if metadata.last_checked is None or cached is None:
         return False
     return now - float(metadata.last_checked) < constants.CODEX_INSTRUCTIONS_CACHE_TTL_SECONDS

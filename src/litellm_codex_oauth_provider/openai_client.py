@@ -162,7 +162,23 @@ class _BaseCodexClient(OpenAI):
         http_client: httpx.Client | None = None,
         **kwargs: Any,
     ) -> None:
-        """Initialize the client with Codex-specific authentication providers."""
+        """Initialize the client with Codex-specific authentication providers.
+
+        Parameters
+        ----------
+        token_provider : Callable[[], str]
+            Function that returns a valid bearer token for authentication.
+        account_id_provider : Callable[[], str | None]
+            Function that returns the account ID or None if not available.
+        base_url : str
+            Base URL for the Codex API endpoint.
+        timeout : float, optional
+            Request timeout in seconds. Default is 60.0.
+        http_client : httpx.Client | None, optional
+            Custom httpx client instance. If None, creates a default client.
+        **kwargs : Any
+            Additional arguments passed to the parent OpenAI client.
+        """
         client = http_client or _create_http_client(base_url, timeout)
         super().__init__(
             api_key="",
@@ -251,7 +267,23 @@ class AsyncCodexOpenAIClient(AsyncOpenAI):
         http_client: httpx.AsyncClient | None = None,
         **kwargs: Any,
     ) -> None:
-        """Initialize the async client with Codex-specific authentication providers."""
+        """Initialize the async client with Codex-specific authentication providers.
+
+        Parameters
+        ----------
+        token_provider : Callable[[], str]
+            Function that returns a valid bearer token for authentication.
+        account_id_provider : Callable[[], str | None]
+            Function that returns the account ID or None if not available.
+        base_url : str
+            Base URL for the Codex API endpoint.
+        timeout : float, optional
+            Request timeout in seconds. Default is 60.0.
+        http_client : httpx.AsyncClient | None, optional
+            Custom async httpx client instance. If None, creates a default client.
+        **kwargs : Any
+            Additional arguments passed to the parent AsyncOpenAI client.
+        """
         client = http_client or _create_async_http_client(base_url, timeout)
         super().__init__(
             api_key="",

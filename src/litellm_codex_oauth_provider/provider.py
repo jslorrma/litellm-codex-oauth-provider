@@ -262,7 +262,14 @@ class CodexAuthProvider(CustomLLM):
         return base
 
     def _maybe_enable_debug_logging(self) -> None:
-        """Enable debug logging when `CODEX_DEBUG` is set."""
+        """Enable debug logging when `CODEX_DEBUG` is set.
+
+        Notes
+        -----
+        Checks the CODEX_DEBUG environment variable and enables debug logging
+        if set to any of: "1", "true", "yes", "on", or "debug" (case-insensitive).
+        Configures the root logger to DEBUG level when enabled.
+        """
         if os.getenv("CODEX_DEBUG", "").lower() in {"1", "true", "yes", "on", "debug"}:
             logging.basicConfig(level=logging.DEBUG)
             logger.debug("CODEX_DEBUG enabled; debug logging active.")
@@ -427,7 +434,18 @@ class CodexAuthProvider(CustomLLM):
         return input_messages
 
     def _get_sync_client(self, base_url: str) -> CodexOpenAIClient:
-        """Return a CodexOpenAIClient targeting the requested base URL."""
+        """Return a CodexOpenAIClient targeting the requested base URL.
+
+        Parameters
+        ----------
+        base_url : str
+            Target base URL for the client.
+
+        Returns
+        -------
+        CodexOpenAIClient
+            Reuses cached client if base_url matches, otherwise creates new client.
+        """
         if base_url == self.base_url:
             return self._client
         return CodexOpenAIClient(
@@ -437,7 +455,18 @@ class CodexAuthProvider(CustomLLM):
         )
 
     def _get_async_client(self, base_url: str) -> AsyncCodexOpenAIClient:
-        """Return an AsyncCodexOpenAIClient targeting the requested base URL."""
+        """Return an AsyncCodexOpenAIClient targeting the requested base URL.
+
+        Parameters
+        ----------
+        base_url : str
+            Target base URL for the async client.
+
+        Returns
+        -------
+        AsyncCodexOpenAIClient
+            Reuses cached async client if base_url matches, otherwise creates new client.
+        """
         if base_url == self.base_url:
             return self._async_client
         return AsyncCodexOpenAIClient(
