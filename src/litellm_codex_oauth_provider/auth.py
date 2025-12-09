@@ -115,11 +115,12 @@ def _extract_bearer_token() -> str:
     # Handle nested structure: {"chatgpt": {"access_token": "...", ...}}
     if "chatgpt" in auth_data:
         token_data = auth_data["chatgpt"]
+    # Handle nested structure: {"tokens": {"access_token": "...", ...}}
+    elif "tokens" in auth_data:
+        token_data = auth_data["tokens"]
     # Handle flat structure: {"access_token": "...", ...}
     elif "access_token" in auth_data:
         token_data = auth_data
-    else:
-        raise CodexAuthTokenError("No access_token found in Codex auth data")
 
     access_token = token_data.get("access_token")
     if not access_token:
