@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
 
-class SimpleCodexClient:
+class CodexAPIClient:
     """Simple HTTP client for Codex API requests using httpx.
 
     This client handles the actual HTTP communication with the Codex API,
@@ -265,7 +265,7 @@ class SimpleCodexClient:
         """Close the async HTTP client connections."""
         await self._async_client.aclose()
 
-    def __enter__(self) -> SimpleCodexClient:
+    def __enter__(self) -> CodexAPIClient:
         """Context manager entry."""
         return self
 
@@ -278,7 +278,7 @@ class SimpleCodexClient:
         """Context manager exit."""
         self.close()
 
-    async def __aenter__(self) -> SimpleCodexClient:
+    async def __aenter__(self) -> CodexAPIClient:
         """Async context manager entry."""
         return self
 
