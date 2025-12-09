@@ -329,7 +329,7 @@ class CodexAuthProvider(CustomLLM):
             LiteLLM-compatible response object
         """
         # Normalize model name
-        normalized_model = self._normalize_model(model)
+        normalized_model = _normalize_model(model)
 
         # Get instructions and prepare messages
         instructions_text = fetch_codex_instructions(normalized_model)
@@ -368,7 +368,7 @@ class CodexAuthProvider(CustomLLM):
         Parameters and returns follow the same pattern as completion().
         """
         # Normalize model name
-        normalized_model = self._normalize_model(model)
+        normalized_model = _normalize_model(model)
 
         # Get instructions and prepare messages
         instructions_text = fetch_codex_instructions(normalized_model)
