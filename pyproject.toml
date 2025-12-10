@@ -256,4 +256,4 @@ ignore = [
 ]
 [tool.ruff.lint.per-file-ignores]
 "*.ipynb" = ["D", "E402"]
-"tests/*" = ["D205", "D400", "D401", "D415", "E402"]
+"tests/*" = ["D205", "D400", "D401", "D415", "E402", "PLR2004"]
