@@ -138,7 +138,7 @@ def parse_response_body(response: httpx.Response) -> dict[str, Any]:
         if parsed:
             return parsed
         raise RuntimeError("Codex API returned stream without final response event")
-    
+
     # Parse as standard JSON response
     try:
         return response.json()
