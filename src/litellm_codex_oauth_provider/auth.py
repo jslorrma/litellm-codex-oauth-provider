@@ -122,6 +122,10 @@ def _extract_bearer_token() -> str:
     # Handle flat structure: {"access_token": "...", ...}
     elif "access_token" in auth_data:
         token_data = auth_data
+    else:
+        raise CodexAuthTokenError(
+            "Unsupported Codex auth.json structure. Expected one of: 'chatgpt', 'tokens', or 'access_token' keys."
+        )
 
     access_token = token_data.get("access_token")
     if not access_token:
