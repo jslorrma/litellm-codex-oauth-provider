@@ -143,7 +143,11 @@ def parse_response_body(response: httpx.Response) -> dict[str, Any]:
     try:
         return response.json()
     except json.JSONDecodeError as exc:
-        raise RuntimeError("Codex API returned invalid JSON") from exc
+        # Provide helpful context for debugging JSON parse failures
+        body_preview = response.text[:200] if len(response.text) > 200 else response.text
+        raise RuntimeError(
+            f"Codex API returned invalid JSON (status {response.status_code}): {body_preview}..."
+        ) from exc
 
 
 def convert_sse_to_json(payload: str) -> dict[str, Any]:
