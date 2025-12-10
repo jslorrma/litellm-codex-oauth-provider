@@ -3,13 +3,13 @@ r"""Codex response adapters for LiteLLM interoperability.
 This module converts Codex `/responses` payloads—whether delivered as Server-Sent Events
 (SSE) buffers or plain JSON bodies—into LiteLLM `ModelResponse` objects. Functions are
 intentionally side-effect free to keep sync and async call stacks simple and testable.
-Whenever possible, parsing relies on OpenAI's typed models for strict validation, while
-fallback paths preserve resilience against minor API drift or incomplete payloads.
+The implementation uses direct JSON parsing for maximum compatibility with Codex's
+response format while maintaining resilience against API variations.
 
 Key capabilities
 ----------------
 - Detect SSE buffers versus JSON responses and normalize them into a single payload
-- Validate payloads with OpenAI typed models and surface concise debug context on failure
+- Direct JSON parsing for both SSE and standard responses
 - Normalize tool calls from message-level or output-level formats
 - Build LiteLLM usage blocks from Codex token counters and inferred totals
 - Generate minimal streaming chunks to simulate streaming from completed responses
@@ -49,12 +49,12 @@ Notes
 - All helpers are deterministic and reusable across sync/async provider paths.
 - Tool-call handling supports both modern and legacy Codex formats.
 - Usage aggregation tolerates missing totals by deriving them from known fields.
+- Direct JSON parsing ensures maximum compatibility with Codex response formats.
 
 See Also
 --------
 - `litellm.types.utils.GenericStreamingChunk`: Streaming response chunk used by LiteLLM
 - `litellm.ModelResponse`: Normalized response structure expected by LiteLLM
-- `openai.types.responses.Response`: Typed model used for validation
 """
 
 from __future__ import annotations
