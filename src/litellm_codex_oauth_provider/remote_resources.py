@@ -95,6 +95,14 @@ CACHE_FILES: Final[dict[str, str]] = {
     "codex-max": "codex-max-instructions.md",
     "codex": "codex-instructions.md",
     "gpt-5.1": "gpt-5.1-instructions.md",
+    "gpt-5.1-codex": "codex-instructions.md",
+    "gpt-5.1-codex-max": "codex-max-instructions.md",
+    "gpt-5.1-codex-mini": "codex-instructions.md",
+}
+
+# Allow model-family aliases that should reuse an existing instruction file.
+FAMILY_ALIASES: Final[dict[str, str]] = {
+    "codex-mini": "codex",
 }
 
 
@@ -130,9 +138,13 @@ def _cache_paths(model_family: str) -> CachePaths:
         Paths for instruction and metadata files.
     """
     cache_dir = constants.CODEX_CACHE_DIR
-    instructions_file = cache_dir / CACHE_FILES[model_family]
+    cache_key = FAMILY_ALIASES.get(model_family, model_family)
+    if cache_key not in CACHE_FILES:
+        raise ValueError(f"Model '{model_family}' not found")
+
+    instructions_file = cache_dir / CACHE_FILES[cache_key]
     meta_suffix = constants.CODEX_CACHE_META_SUFFIX
-    meta_file = cache_dir / f"{CACHE_FILES[model_family].replace('.md', meta_suffix)}"
+    meta_file = cache_dir / f"{CACHE_FILES[cache_key].replace('.md', meta_suffix)}"
     return CachePaths(instructions=instructions_file, metadata=meta_file)
 
 

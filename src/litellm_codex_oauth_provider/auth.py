@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 from . import constants
 from .exceptions import (
     CodexAuthFileNotFoundError,
+    CodexAuthRefreshError,
     CodexAuthTokenError,
     CodexAuthTokenExpiredError,
 )
@@ -217,3 +218,57 @@ def get_auth_context() -> AuthContext:
 def _decode_account_id_old(access_token: str) -> str:
     """Legacy function name for backward compatibility."""
     return _decode_account_id(access_token)
+
+
+def _refresh_token() -> str:
+    """Refresh the access token using the refresh token.
+
+    This function loads the auth data and attempts to refresh the access token.
+    Raises CodexAuthRefreshError if no refresh token is available or refresh fails.
+
+    Returns
+    -------
+    str
+        The new access token
+
+    Raises
+    ------
+    CodexAuthRefreshError
+        If no refresh token is available or refresh fails
+    """
+    auth_data = _load_auth_data()
+    chatgpt_data = auth_data.get("chatgpt", {})
+    refresh_token = chatgpt_data.get("refresh_token")
+
+    if not refresh_token:
+        raise CodexAuthRefreshError(
+            "No refresh token available in auth data. "
+            "Please ensure your auth.json file includes a 'refresh_token' field."
+        )
+
+    # TODO: Implement actual token refresh logic
+    # For now, just raise an error since the refresh logic isn't implemented
+    raise CodexAuthRefreshError(
+        "Token refresh functionality is not yet implemented. "
+        "Please manually update your access token."
+    )
+
+
+def get_bearer_token() -> str:
+    """Get bearer token from auth context.
+
+    This is a convenience function that extracts just the bearer token
+    from the authentication context.
+
+    Returns
+    -------
+    str
+        The bearer token for API authentication
+
+    Raises
+    ------
+    Exception
+        Any exception raised by get_auth_context()
+    """
+    context = get_auth_context()
+    return context.access_token

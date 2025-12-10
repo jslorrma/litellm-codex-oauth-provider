@@ -20,9 +20,10 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from . import constants
+from .sse_utils import parse_sse_events
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import AsyncIterator, Mapping
 
 
 class CodexAPIClient:
@@ -170,6 +171,64 @@ class CodexAPIClient:
             )
             response.raise_for_status()
             return await self._parse_response_async(response)
+
+        except httpx.HTTPStatusError as exc:
+            # Let HTTP errors bubble up with context
+            raise exc
+        except Exception as exc:
+            # Wrap other exceptions for clarity
+            raise RuntimeError(f"Failed to communicate with Codex API: {exc}") from exc
+
+    async def stream_responses_sse(
+        self,
+        payload: Mapping[str, Any],
+        url_suffix: str = "/responses",
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream responses from Codex API with full SSE parsing.
+
+        This method performs a streaming request and yields individual SSE events
+        as they are received from the API. Each event is parsed and yielded as
+        a structured dictionary.
+
+        Parameters
+        ----------
+        payload : Mapping[str, Any]
+            Request payload for the responses endpoint
+        url_suffix : str
+            URL suffix to append to base URL
+
+        Yields
+        ------
+        dict[str, Any]
+            Parsed SSE events as structured dictionaries
+
+        Raises
+        ------
+        httpx.HTTPStatusError
+            If the API returns an error status code
+
+        Examples
+        --------
+        >>> async for event in client.stream_responses_sse(payload):
+        ...     print(f"Event: {event['type']}")
+        """
+        url = f"{self.base_url.rstrip('/')}{url_suffix}"
+        headers = self._build_headers()
+
+        # Ensure stream is enabled
+        payload_with_stream = dict(payload)
+        payload_with_stream.setdefault("stream", True)
+
+        try:
+            async with self._async_client.stream(
+                "POST",
+                url,
+                json=payload_with_stream,
+                headers=headers,
+            ) as response:
+                response.raise_for_status()
+                async for event in parse_sse_events(response):
+                    yield event
 
         except httpx.HTTPStatusError as exc:
             # Let HTTP errors bubble up with context

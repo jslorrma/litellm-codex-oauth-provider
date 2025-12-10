@@ -16,27 +16,42 @@ See the legacy_complex.py module for the full-featured implementation.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
 import time
-from collections.abc import Mapping
-from typing import Any
+from collections.abc import AsyncIterator, Mapping
+from threading import Thread
+from typing import TYPE_CHECKING, Any, TypeVar
 
-from litellm import CustomLLM, ModelResponse
-from litellm.types.utils import GenericStreamingChunk
-from litellm.utils import CustomStreamWrapper
+from litellm import Choices, CustomLLM, Message, ModelResponse
+from litellm.types.utils import Usage
 
 from . import constants
-from .adapter import transform_response
 from .auth import _decode_account_id, get_auth_context
 from .exceptions import CodexAuthTokenExpiredError
 from .http_client import CodexAPIClient
-from .model_map import _strip_provider_prefix, normalize_model
+from .model_map import _strip_provider_prefix, get_model_family, normalize_model
 from .prompts import DEFAULT_INSTRUCTIONS, build_tool_bridge_message, derive_instructions
 from .reasoning import apply_reasoning_config
 from .remote_resources import fetch_codex_instructions
+from .sse_utils import extract_text_from_sse_event, extract_tool_call_from_sse_event
+from .streaming_utils import (
+    ToolCallTracker,
+    build_final_chunk,
+    build_reasoning_chunk,
+    build_text_chunk,
+    build_tool_call_chunk,
+)
+
+if TYPE_CHECKING:
+    from litellm.types.utils import GenericStreamingChunk
 
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
+VALID_REASONING = {"none", "minimal", "low", "medium", "high", "xhigh"}
+SUPPORTED_FAMILIES = {"codex", "codex-max", "codex-mini", "gpt-5.1"}
 
 
 # Internal utility functions for pure logic operations
@@ -79,63 +94,149 @@ def _prepare_messages(
     return input_messages
 
 
-def _build_payload(
-    model: str,
-    instructions: str,
-    messages: list[dict[str, Any]],
-    tools: list[dict[str, Any]] | None = None,
-    **kwargs: Any,
-) -> dict[str, Any]:
-    """Build the Codex responses API payload.
-
-    Parameters
-    ----------
-    model : str
-        Normalized Codex model identifier
-    instructions : str
-        Instruction string derived from system/user prompts
-    messages : list[dict[str, Any]]
-        Chat messages prepared for Codex
-    tools : list[dict[str, Any]] | None
-        Normalized tool definitions
-    **kwargs : Any
-        Additional completion parameters
-
-    Returns
-    -------
-    dict[str, Any]
-        Fully prepared payload ready for dispatch to `/responses`
-    """
+def _build_payload(payload_parts: dict[str, Any]) -> dict[str, Any]:
+    """Build the Codex responses API payload (shared by completion + streaming)."""
     payload = {
-        "model": model,
-        "input": _prepare_messages(messages, tools),
-        "instructions": instructions or DEFAULT_INSTRUCTIONS,
+        "model": payload_parts["normalized_model"],
+        "input": _prepare_messages(payload_parts["messages"], payload_parts["tools"]),
+        "instructions": payload_parts["instructions"] or DEFAULT_INSTRUCTIONS,
         "include": [constants.REASONING_INCLUDE_TARGET],
         "store": False,
+        "stream": True,  # Always use streaming for Codex
     }
 
     # Add tools if provided
-    if tools:
-        payload["tools"] = tools
+    if payload_parts["tools"]:
+        payload["tools"] = payload_parts["tools"]
 
     # Add reasoning config
     reasoning_config = apply_reasoning_config(
-        original_model=_strip_provider_prefix(model),
-        normalized_model=model,
-        reasoning_effort=kwargs.get("reasoning_effort"),
-        verbosity=kwargs.get("verbosity"),
+        original_model=_strip_provider_prefix(payload_parts["normalized_model"]),
+        normalized_model=payload_parts["normalized_model"],
+        reasoning_effort=payload_parts["reasoning_effort"],
+        verbosity=payload_parts["verbosity"],
     )
     payload.update(reasoning_config)
 
     # Add basic passthrough options
-    optional_params = kwargs.get("optional_params", {}) or {}
     passthrough = {
-        "metadata": optional_params.get("metadata"),
-        "user": optional_params.get("user"),
+        "metadata": payload_parts["optional_params"].get("metadata"),
+        "user": payload_parts["optional_params"].get("user"),
     }
     payload.update({k: v for k, v in passthrough.items() if v is not None})
 
     return payload
+
+
+def _prepare_common_payload(
+    model: str,
+    messages: list[dict[str, Any]],
+    **kwargs: Any,
+) -> tuple[dict[str, Any], str]:
+    """Normalize inputs, derive instructions/tools, and return payload + normalized model."""
+    normalized_model = _normalize_model(model)
+    _validate_model_supported(normalized_model)
+
+    validated_reasoning = _coerce_reasoning_effort(kwargs.get("reasoning_effort"))
+    optional_params = kwargs.get("optional_params", {}) or {}
+    tools = kwargs.get("tools") or optional_params.get("tools")
+    normalized_tools = _normalize_tools(tools) if tools else None
+
+    instructions_text = fetch_codex_instructions(normalized_model)
+    instructions, prepared_messages = derive_instructions(
+        messages,
+        normalized_model=normalized_model,
+        instructions_text=instructions_text,
+    )
+
+    payload = _build_payload(
+        {
+            "normalized_model": normalized_model,
+            "instructions": instructions,
+            "messages": prepared_messages,
+            "tools": normalized_tools,
+            "reasoning_effort": validated_reasoning,
+            "verbosity": kwargs.get("verbosity"),
+            "optional_params": optional_params,
+        }
+    )
+    return payload, normalized_model
+
+
+def _run_sync(coro: asyncio.Future | asyncio.Awaitable[T]) -> T:
+    """Run a coroutine in a sync context, even if a loop is already running.
+
+    The function checks if there's an active event loop. If not, it uses asyncio.run().
+    If there is an active loop, it runs the coroutine in a separate thread to avoid
+    conflicts.
+
+    Parameters
+    ----------
+    coro : asyncio.Future | asyncio.Awaitable[T]
+        Coroutine to run
+
+    Returns
+    -------
+    T
+        Result of the coroutine
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    result: dict[str, Any] = {}
+    exc: dict[str, BaseException] = {}
+
+    def _runner() -> None:
+        try:
+            result["value"] = asyncio.run(coro)
+        except BaseException as err:  # pragma: no cover - passthrough
+            exc["err"] = err
+
+    thread = Thread(target=_runner, daemon=True)
+    thread.start()
+    thread.join()
+
+    if exc:
+        raise exc["err"]
+    return result["value"]
+
+
+def _validate_model_supported(normalized_model: str) -> None:
+    """Ensure the requested model maps to a supported family."""
+    family = get_model_family(normalized_model)
+    if family not in SUPPORTED_FAMILIES:
+        raise ValueError(f"Model '{normalized_model}' not found")
+
+
+def _coerce_reasoning_effort(reasoning_effort: Any | None) -> str | None:
+    """Validate and normalize reasoning_effort input."""
+    if reasoning_effort is None:
+        return None
+
+    value = None
+    if isinstance(reasoning_effort, str):
+        value = reasoning_effort
+    elif isinstance(reasoning_effort, Mapping):
+        inner = reasoning_effort.get("effort")
+        if isinstance(inner, str):
+            value = inner
+    else:
+        raise ValueError(
+            "Invalid reasoning_effort. Must be one of: "
+            f"{sorted(VALID_REASONING)} or a mapping with an 'effort' key."
+        )
+
+    if value is None:
+        return None
+
+    normalized = value.lower()
+    if normalized not in VALID_REASONING:
+        raise ValueError(
+            f"Invalid reasoning_effort: '{value}'. Must be one of: {sorted(VALID_REASONING)}"
+        )
+    return normalized
 
 
 def _normalize_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
@@ -288,74 +389,14 @@ class CodexAuthProvider(CustomLLM):
             return _decode_account_id(self._cached_token)
         return None
 
-    def _dispatch_request(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Dispatch request using the simple HTTP client."""
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(
-                "Dispatching Codex responses request",
-                extra={
-                    "model": payload.get("model"),
-                    "input_len": len(payload.get("input", [])),
-                    "tools_len": len(payload.get("tools", [])),
-                },
-            )
-
-        return self._http_client.post_responses(payload)
-
-    async def _dispatch_request_async(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Dispatch async request using the simple HTTP client."""
-        return await self._http_client.post_responses_async(payload)
-
     def completion(
         self,
         model: str,
         messages: list[dict[str, Any]],
         **kwargs: Any,
     ) -> ModelResponse:
-        """Complete a chat completion request using Codex authentication.
-
-        Parameters
-        ----------
-        model : str
-            Model identifier (supports provider prefixes like "codex/")
-        messages : list[dict[str, Any]]
-            Chat messages in OpenAI format
-        **kwargs : Any
-            Additional parameters including tools, reasoning_effort, verbosity, etc.
-
-        Returns
-        -------
-        ModelResponse
-            LiteLLM-compatible response object
-        """
-        # Normalize model name
-        normalized_model = _normalize_model(model)
-
-        # Get instructions and prepare messages
-        instructions_text = fetch_codex_instructions(normalized_model)
-        instructions, prepared_messages = derive_instructions(
-            messages,
-            normalized_model=normalized_model,
-            instructions_text=instructions_text,
-        )
-
-        # Extract tools
-        optional_params = kwargs.get("optional_params", {}) or {}
-        tools = kwargs.get("tools") or optional_params.get("tools")
-        normalized_tools = _normalize_tools(tools) if tools else None
-
-        # Build payload
-        payload = _build_payload(
-            model=normalized_model,
-            instructions=instructions,
-            messages=prepared_messages,
-            tools=normalized_tools,
-            **kwargs,
-        )
-
-        # Dispatch request and transform response
-        data = self._dispatch_request(payload)
-        return transform_response(data, normalized_model)
+        """Sync wrapper that delegates to async completion."""
+        return _run_sync(self.acompletion(model, messages, **kwargs))
 
     async def acompletion(
         self,
@@ -363,112 +404,272 @@ class CodexAuthProvider(CustomLLM):
         messages: list[dict[str, Any]],
         **kwargs: Any,
     ) -> ModelResponse:
-        """Async completion method.
+        """Complete a chat completion request using Codex authentication with SSE accumulation."""
+        payload, normalized_model = _prepare_common_payload(model, messages, **kwargs)
 
-        Parameters and returns follow the same pattern as completion().
-        """
-        # Normalize model name
-        normalized_model = _normalize_model(model)
-
-        # Get instructions and prepare messages
-        instructions_text = fetch_codex_instructions(normalized_model)
-        instructions, prepared_messages = derive_instructions(
-            messages,
-            normalized_model=normalized_model,
-            instructions_text=instructions_text,
+        # Process SSE events and build response
+        accumulated_text, tool_calls, usage, finish_reason = await self._process_sse_events(
+            self._http_client.stream_responses_sse(payload)
         )
 
-        # Extract tools
-        optional_params = kwargs.get("optional_params", {}) or {}
-        tools = kwargs.get("tools") or optional_params.get("tools")
-        normalized_tools = _normalize_tools(tools) if tools else None
-
-        # Build payload
-        payload = _build_payload(
-            model=normalized_model,
-            instructions=instructions,
-            messages=prepared_messages,
-            tools=normalized_tools,
-            **kwargs,
+        return self._build_model_response(
+            accumulated_text, tool_calls, usage, finish_reason, normalized_model
         )
-
-        # Dispatch async request and transform response
-        data = await self._dispatch_request_async(payload)
-        return transform_response(data, normalized_model)
 
     def streaming(
         self,
         model: str,
         messages: list[dict[str, Any]],
         **kwargs: Any,
-    ) -> CustomStreamWrapper:
-        """Return a streaming response wrapper.
+    ) -> AsyncIterator[GenericStreamingChunk]:
+        """Sync wrapper that delegates to async streaming."""
 
-        For simplicity, this implementation provides non-streaming responses
-        wrapped in streaming format. True streaming will be implemented in a later iteration.
-        """
-        # Get the completion response
-        response = self.completion(model, messages, **kwargs)
+        async def _collect() -> list[GenericStreamingChunk]:
+            return [chunk async for chunk in self.astreaming(model, messages, **kwargs)]
 
-        # Create a simple streaming chunk
-        chunk_data = {
-            "text": response.choices[0].message.content or "",
-            "is_finished": True,
-            "finish_reason": response.choices[0].finish_reason or "stop",
-            "index": 0,
-            "usage": response.usage,
-            "provider_specific_fields": {
-                "id": response.id,
-                "model": response.model,
-            },
-        }
-
-        chunk = GenericStreamingChunk(**chunk_data)
-
-        # Return single-chunk stream
-        stream = (chunk for _ in [0])
-        return CustomStreamWrapper(
-            stream,
-            model,
-            logging_obj=kwargs.get("logging_obj"),
-            custom_llm_provider="codex",
-        )
+        return iter(_run_sync(_collect()))
 
     async def astreaming(
         self,
         model: str,
         messages: list[dict[str, Any]],
         **kwargs: Any,
-    ) -> CustomStreamWrapper:
-        """Async streaming response wrapper.
+    ) -> AsyncIterator[GenericStreamingChunk]:
+        """True streaming method that yields SSE events as streaming chunks."""
+        payload, _normalized_model = _prepare_common_payload(model, messages, **kwargs)
+        tool_tracker = ToolCallTracker()
 
-        Returns a streaming wrapper with a single chunk containing the full response.
+        try:
+            async for event in self._http_client.stream_responses_sse(payload):
+                chunk = self._process_sse_streaming_event(event, tool_tracker)
+                if chunk:
+                    yield chunk
+        except Exception as exc:
+            logger.error(f"Error during SSE streaming: {exc}")
+            raise RuntimeError(f"Failed to stream Codex response: {exc}") from exc
+
+    def _process_sse_streaming_event(
+        self, event: dict[str, Any], tool_tracker: ToolCallTracker
+    ) -> GenericStreamingChunk | None:
+        """Process individual SSE event for streaming.
+
+        Parameters
+        ----------
+        event : dict[str, Any]
+            SSE event to process
+        tool_tracker : ToolCallTracker
+            Tool call state tracker
+
+        Returns
+        -------
+        GenericStreamingChunk | None
+            Streaming chunk or None if no chunk to yield
         """
-        # Get the async completion response
-        response = await self.acompletion(model, messages, **kwargs)
+        event_type = event.get("type")
+        handlers: dict[str, Any] = {
+            "text_delta": self._build_text_chunk_from_event,
+            "reasoning_delta": self._build_reasoning_chunk_from_event,
+            "function_arguments_delta": lambda evt: self._build_tool_chunk_from_event(
+                evt, tool_tracker
+            ),
+            "completion": self._build_completion_chunk_from_event,
+        }
 
-        # Create a simple streaming chunk
-        chunk = GenericStreamingChunk(
-            text=response.choices[0].message.content or "",
-            is_finished=True,
-            finish_reason=response.choices[0].finish_reason or "stop",
-            index=0,
-            usage=response.usage,
-            provider_specific_fields={
-                "id": response.id,
-                "model": response.model,
-            },
+        handler = handlers.get(event_type)
+        if not handler:
+            return None
+
+        return handler(event)
+
+    def _build_text_chunk_from_event(self, event: dict[str, Any]) -> GenericStreamingChunk | None:
+        text = extract_text_from_sse_event(event)
+        if not text:
+            return None
+        return build_text_chunk(text)
+
+    def _build_reasoning_chunk_from_event(
+        self, event: dict[str, Any]
+    ) -> GenericStreamingChunk | None:
+        reasoning_delta = event.get("delta") or extract_text_from_sse_event(event)
+        if not reasoning_delta:
+            return None
+        return build_reasoning_chunk(reasoning_delta)
+
+    def _build_tool_chunk_from_event(
+        self, event: dict[str, Any], tool_tracker: ToolCallTracker
+    ) -> GenericStreamingChunk | None:
+        tool_data = extract_tool_call_from_sse_event(event)
+        if not tool_data:
+            return None
+
+        call_id = tool_data.get("call_id") or "unknown"
+        arguments = tool_data.get("arguments", "")
+        name = tool_data.get("name")
+
+        if call_id not in tool_tracker.get_active_calls():
+            tool_tracker.start_tool_call(call_id, name or "unknown")
+
+        tool_tracker.add_arguments_delta(call_id, arguments)
+
+        tracked_name = tool_tracker.get_active_calls().get(call_id, {}).get("name", "unknown")
+        return build_tool_call_chunk(call_id, name or tracked_name, arguments)
+
+    def _build_completion_chunk_from_event(self, event: dict[str, Any]) -> GenericStreamingChunk:
+        usage = event.get("usage") or {}
+        finish_reason = event.get("finish_reason") or "stop"
+
+        data = event.get("data")
+        if isinstance(data, str):
+            try:
+                parsed_data = json.loads(data)
+                usage = parsed_data.get("usage", usage)
+                finish_reason = parsed_data.get("finish_reason", finish_reason)
+            except json.JSONDecodeError:
+                pass
+        elif isinstance(data, dict):
+            usage = data.get("usage", usage)
+            finish_reason = data.get("finish_reason", finish_reason)
+
+        return build_final_chunk(usage, finish_reason)
+
+    def _extract_completion_metadata(
+        self, event: dict[str, Any], usage: dict[str, int], finish_reason: str
+    ) -> tuple[dict[str, int], str]:
+        usage_value = event.get("usage") or usage
+        finish_value = event.get("finish_reason") or finish_reason
+
+        data = event.get("data")
+        if isinstance(data, str):
+            try:
+                parsed_data = json.loads(data)
+                usage_value = parsed_data.get("usage", usage_value)
+                finish_value = parsed_data.get("finish_reason", finish_value)
+            except json.JSONDecodeError:
+                pass
+        elif isinstance(data, dict):
+            usage_value = data.get("usage", usage_value)
+            finish_value = data.get("finish_reason", finish_value)
+
+        return usage_value, finish_value
+
+    async def _process_sse_events(
+        self, event_stream: AsyncIterator[dict[str, Any]]
+    ) -> tuple[str, list[dict], dict[str, int], str]:
+        """Process SSE events and accumulate content.
+
+        Parameters
+        ----------
+        event_stream : AsyncIterator[dict[str, Any]]
+            SSE event stream from the API
+
+        Returns
+        -------
+        tuple[str, list[dict], dict[str, int], str]
+            Accumulated text, tool calls, usage data, and finish reason
+        """
+        accumulated_text = ""
+        tool_calls = []
+        usage = {}
+        finish_reason = "stop"
+
+        try:
+            async for event in event_stream:
+                event_type = event.get("type")
+
+                if event_type == "text_delta":
+                    text = extract_text_from_sse_event(event)
+                    if text:
+                        accumulated_text += text
+                elif event_type == "function_arguments_delta":
+                    tool_data = extract_tool_call_from_sse_event(event)
+                    if tool_data:
+                        tool_calls.append(tool_data)
+                elif event_type == "completion":
+                    usage, finish_reason = self._extract_completion_metadata(
+                        event, usage, finish_reason
+                    )
+                elif event_type == "done":
+                    break
+        except Exception as exc:
+            logger.error(f"Error during SSE processing: {exc}")
+            raise RuntimeError(f"Failed to process Codex response: {exc}") from exc
+
+        return accumulated_text, tool_calls, usage, finish_reason
+
+    def _build_model_response(
+        self,
+        text: str,
+        tool_calls: list[dict],
+        usage: dict[str, int],
+        finish_reason: str,
+        model: str,
+    ) -> ModelResponse:
+        """Build ModelResponse from accumulated SSE data.
+
+        Parameters
+        ----------
+        text : str
+            Accumulated text content
+        tool_calls : list[dict]
+            List of tool calls
+        usage : dict[str, int]
+            Usage statistics
+        finish_reason : str
+            Reason for completion
+        model : str
+            Model identifier
+
+        Returns
+        -------
+        ModelResponse
+            LiteLLM-compatible response object
+        """
+
+        def _coalesce_tool_calls(raw_calls: list[dict]) -> list[dict]:
+            aggregated: dict[str, dict[str, Any]] = {}
+            for call in raw_calls:
+                call_id = call.get("call_id") or call.get("id") or "unknown"
+                entry = aggregated.setdefault(
+                    call_id,
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": call.get("name") or "unknown", "arguments": ""},
+                    },
+                )
+                arguments = call.get("arguments") or ""
+                entry["function"]["arguments"] += arguments
+                if call.get("name"):
+                    entry["function"]["name"] = call["name"]
+            return list(aggregated.values())
+
+        message = Message(
+            content=text,
+            role="assistant",
+            tool_calls=_coalesce_tool_calls(tool_calls) if tool_calls else None,
         )
 
-        # Create async stream
-        async def async_stream() -> Any:
-            yield chunk
+        usage_obj = None
+        if usage:
+            usage_obj = Usage(
+                prompt_tokens=int(usage.get("prompt_tokens", 0)),
+                completion_tokens=int(usage.get("completion_tokens", 0)),
+                total_tokens=int(usage.get("total_tokens", 0)),
+            )
 
-        return CustomStreamWrapper(
-            async_stream(),
-            model,
-            logging_obj=kwargs.get("logging_obj"),
-            custom_llm_provider="codex",
+        return ModelResponse(
+            id=f"cmpl-{int(time.time())}",
+            choices=[
+                Choices(
+                    finish_reason=finish_reason,
+                    index=0,
+                    message=message,
+                )
+            ],
+            created=int(time.time()),
+            model=model,
+            object="chat.completion",
+            usage=usage_obj,
         )
 
     # Global instance for LiteLLM compatibility
