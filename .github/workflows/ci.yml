@@ -12,9 +12,11 @@ jobs:
   lint:
     name: Lint and format
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2
 
       - name: Set up pixi
         uses: prefix-dev/setup-pixi@v0.8.10
@@ -31,9 +33,11 @@ jobs:
   test:
     name: Tests with coverage
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2
 
       - name: Set up pixi
         uses: prefix-dev/setup-pixi@v0.8.10
@@ -45,7 +49,7 @@ jobs:
         run: pixi run -e test test-with-coverage
 
       - name: Upload coverage and reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.5.0
         with:
           name: test-reports
           path: |
@@ -56,24 +60,59 @@ jobs:
   version-check:
     name: Detect version bump
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       version-changed: ${{ steps.version-metadata.outputs.changed }}
       new-version: ${{ steps.version-metadata.outputs.newVersion }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2
+
+      - name: Set up pixi
+        uses: prefix-dev/setup-pixi@v0.8.10
+        with:
+          environments: build
+          locked: false
 
       - name: Get current version
         id: get-version
         run: |
+          # Use pixi to run 'hatch version' which reads from src/litellm_codex_oauth_provider/_version.py
           echo "current_version=$(pixi run -e build get-version)" >> "$GITHUB_ENV"
 
       - name: Get previous version from TestPyPI
         id: get-previous-version
         run: |
-          package_name=$(grep -Po '(?<=^name = \")[^\"]*' pyproject.toml)
-          previous_version=$(curl -sf https://test.pypi.org/pypi/$package_name/json \
-            | jq -r '.releases | keys | .[-1]')
+          # Extract package name from pyproject.toml (handles both quote types)
+          # Note: This assumes standard TOML format. For complex cases, consider using tomllib/tomli
+          package_name=$(grep '^name = ' pyproject.toml | cut -d'=' -f2 | tr -d ' "'\''')
+
+          # Get latest version from TestPyPI
+          # Note: This uses Python packaging.version for proper semantic version comparison
+          previous_version=$(curl -sf https://test.pypi.org/pypi/$package_name/json | python3 -c "
+          import sys, json
+          from packaging.version import parse, InvalidVersion
+          try:
+              data = json.load(sys.stdin)
+              versions = []
+              for v in data['releases'].keys():
+                  try:
+                      versions.append((parse(v), v))
+                  except InvalidVersion:
+                      pass  # Skip invalid versions
+              if versions:
+                  print(max(versions)[1])
+              else:
+                  print('0.0.0')
+          except (json.JSONDecodeError, KeyError, ValueError) as e:
+              # Package not found or JSON parse error - fallback to 0.0.0
+              print('0.0.0', file=sys.stderr)
+              print(f'Warning: {e}', file=sys.stderr)
+              print('0.0.0')
+          ")
+
+          # Fallback to 0.0.0 if package doesn't exist yet
           if [ "$previous_version" = "null" ] || [ -z "$previous_version" ]; then
             previous_version="0.0.0"
           fi
@@ -92,11 +131,13 @@ jobs:
   build:
     name: Build package
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     needs: version-check
     if: needs.version-check.outputs.version-changed == 'true'
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2
 
       - name: Set up pixi
         uses: prefix-dev/setup-pixi@v0.8.10
@@ -108,7 +149,7 @@ jobs:
         run: pixi run -e build build
 
       - name: Upload dist
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.5.0
         with:
           name: python-package-distributions
           path: dist/
@@ -116,9 +157,12 @@ jobs:
   publish-to-testpypi:
     name: Publish to TestPyPI
     needs:
+      - lint
+      - test
       - version-check
       - build
     runs-on: ubuntu-latest
+    # Only publish from main branch, not from PRs
     if: needs.version-check.outputs.version-changed == 'true'
 
     environment:
@@ -130,7 +174,7 @@ jobs:
 
     steps:
       - name: Download dist
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v4.1.3
         with:
           name: python-package-distributions
           path: dist/
