@@ -1,54 +1,81 @@
-
 # Pull Request Instructions
 
-Use the following guidelines to create clear and comprehensive pull request descriptions that facilitate effective code reviews and collaboration.
+Use these guidelines to create clear and comprehensive pull request descriptions, enabling effective code reviews and collaboration.
 
-## Template
+---
+
+## Pull Request Description Template
 
 ```markdown
 # _Pull Request Title_
+_The title should be a concise summary of the main change or feature introduced by the pull request and reflect the branch name or issue being addressed._
 
 ## Summary
-
-- _Briefly describe the purpose of the pull request._
-- _Highlight any major changes, new features, or bug fixes._
+- _Briefly describe the purpose of the pull request, referencing the main problem or goal. Don't be too general, but be clear and specific._
+- _Highlight major changes, new features, or bug fixes._
 - _Mention any related issues or tickets._
 
 ## Changes
 
-- _List the changes made in the codebase._
-- _Include any relevant context or rationale for the changes._
+### Core Changes
+_Test and Documentation changes go in their own sections below._
+- _Bullet point summary of changes made, with concise descriptions._
+- _Reference specific files or modules affected. Make sure files are quoted using backticks._
+- _Add relevant context or rationale for the changes._
+- _Include technical details helpful for reviewers._
 
-## Concerns
-- _Note any areas of the code that may require special attention during review._
-- _Mention any known issues or limitations._
-- _Highlight any areas where feedback is specifically requested._
+### Tests
+- _Describe new or updated tests, focusing on data scenarios, validation, or model evaluation._
+- _Mention important cases that are tested (or untested if relevant)._
+
+### Documentation
+- _List any documentation updated, such as README, notebooks, or data dictionaries._
+- _Provide important info for maintainers (e.g., migration steps, reproducibility instructions)._
+
+### Dependencies
+- **Added** – `package@version` (reason/benefit).
+- **Updated** – `package@old -> package@new` (note if security-/bug-fix-related).
+- **Removed** – `package@version` (reason).
+
+**Change Summary:**
+- Files changed: `<N>`
+- Insertions: `+<X>` / Deletions: `-<Y>`
+
+## Breaking Changes or Concerns
+_IMPORTANT: Only fill this section if there are breaking changes, significant concerns, or areas needing special attention. Skip if not applicable._
+- _Note areas requiring special attention during review._
+- _Mention known issues or limitations._
+- _Highlight areas where specific feedback is requested._
+
+## Feedback & Review Requested
+_IMPORTANT: Only fill this section if you want specific feedback from reviewers. Skip if not applicable._
+- _Specific aspects where reviewer input is desired (e.g., pipeline design, feature selection, data handling)._
+- _Alternative approaches considered and rationale for current choice._
 ```
 
-## Steps
+---
 
-**IMPORTANT**: Follow the provided markdown template above to structure your pull request description.
+## Step-by-Step Instructions
 
-1. **Gather Information**:
-    - Collect all the changes made in the pull request, and understand their purpose and connectivity.
-    - Identify any related issues or tickets that the pull request addresses.
+1. **Determine Target Branch**
+   - Default to `origin/develop` if not specified.
+   - Use `origin/<target_branch>` for comparisons.
 
-2. **Review the Changes**:
-    - Examine the code changes in the pull request.
-    - Consider the impact of the changes on the overall codebase.
-    - Look for potential improvements or optimizations.
+2. **Gather Information**
+   - _Always perform this step._
+   - Extract `<target_branch>` as above.
+   - Execute the following commands:
+     - `git fetch origin`; fetch latest remote changes.
+     - `git log origin/<target_branch>..HEAD --pretty=format:'commit %H%nAuthor: %an <%ae>%nDate: %ad%n%n%s%n%n%b%n---' --no-merges`; get a detailed commit log for the pull request.
+     - `git diff origin/<target_branch>...HEAD --stat --name-status`; get a summary of file changes.
 
-3. **Draft the Description**:
-    - Use the provided markdown template to structure your pull request description.
-    - Fill in each section with clear and concise information.
-    - Ensure that the description is easy to read and understand.
+3. **Review & Analyze**
+   - Understand changes from logs and diffs and the PR's purpose and scope.
+   - Identify: Features, fixes, refactors, performance, security, tests, docs, config, deps.
+   - Check for breaking changes (schema, API, contracts).
 
-4. **Highlight Key Areas**:
-    - In the "Concerns" section, note any areas that may require special attention during review.
-    - Mention any known issues or limitations that reviewers should be aware of.
-    - Highlight any areas where you would like specific feedback from reviewers.
-
-5. **Review and Edit**:
-    - Proofread the pull request description for clarity and completeness.
-    - Ensure that all relevant information is included and that the description accurately reflects the changes made.
-    - Edit for grammar, spelling, and formatting to maintain professionalism.
+4. **Draft & Format**
+   - Use the template above.
+   - Fill in all sections with clear and concise information.
+   - Group changes logically.
+   - Be concise but complete and specific not too general.

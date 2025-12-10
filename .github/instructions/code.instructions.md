@@ -1,163 +1,131 @@
 ---
-applyTo: "**/*.py,**/*.pyi,**/pyx"
-description: "Modern Python coding standards"
+applyTo: "**/*.py,**/*.pyi,**/*.pyx"
+description: "Modern Python coding standards and design philosophy for writing and reviewing Python code"
 ---
 
-# Python Coding Guidelines
+# Python Coding Guidelines & Design Philosophy
 
-Use the provided Modern Python Style Guide to write or review Python code with an emphasis on efficient and modern Python language features. The code should make use of comprehensions, f-strings, walrus operators, pattern matching, context managers, generator expressions, decorators, and dataclasses where applicable. Ensure the code adheres to outlined standards, including type annotations, imports, path handling, documentation, and code organization.
+Use this guide when writing or reviewing Python code in this repository. All code must be clean, well-structured, maintainable, and tested. Favor modern, typed, and idiomatic Python that strictly follows both project conventions and tooling.
 
-## Steps
+---
 
-1. **Understand the Guide**:
-    - Familiarize yourself with the core principles of Pythonic, modern design, following PEP 8 and PEP 20.
-    - Incorporate features such as comprehensions, f-strings, walrus operators, pattern matching, decorators, and dataclasses where appropriate.
+## Guiding Philosophy
 
-2. **Incorporate Modern Python Features**:
-    - Use list/dict comprehensions for concise and efficient loops.
-    - Use f-strings for string formatting.
-    - Use the walrus operator (`:=`) for assignment during expressions to simplify code.
-    - Leverage pattern matching (`match` statements) for complex branching logic.
-    - Utilize context managers (`with` statements) for resource handling.
-    - Use generator expressions to handle large data sets efficiently.
-    - Use decorators to add reusable functionality to functions or methods.
-    - Replace verbose class definitions with `dataclasses` for simple data structures or tuples returned from functions.
+### Clean Code is Non-Negotiable
 
-3. **Enhance Code Style**:
-    - Assume Python 3.10 or later and leverage its features fully.
-    - Follow pep8 and Google's Python Style Guide for consistency.
+Clean code is a fundamental requirement for every piece of software we write.
 
-4. **Add Type Annotations**:
-    - Use modern syntax for type hints (`X | None`, `list[T]`).
-    - Explicitly define types for all function parameters and return values.
-    - Use abstract base classes like `Sequence` where read-only access suffices.
-    - Use `list[T]` for mutable sequences of type T
-    - Use `-> None` explicitly when a function doesn't return anything
-    - For multiple return types, use the union operator
+- **Simple & Readable:** Code should be immediately understandable and self-explanatory. Avoid unnecessary complexity.
+- **Well-Structured & Maintainable:** Follow "convention over configuration" for consistent organization and clear separation of concerns.
+- **Consistent:** Adhere to shared standards and conventions for uniformity across the codebase.
+- **Testable:** Design code for automated verification; every unit should be easy to test.
+- **Efficient:** Optimize for performance without sacrificing clarity or maintainability.
 
-5. **Organize Imports and Maintain Path Handling**:
-    - Properly structure imports into three groups: future, standard library, and third-party/local imports.
-    - Put `from __future__ import annotations` at the top of each file to enable postponed evaluation of type annotations.
-    - Replace `os.path` with `pathlib.Path` for file and directory operations.
-    - Always import `pathlib` module for path handling, instead of just the `Path` class.
-    - Import collection types from `collections.abc`
-    - Move any imports just for type hints into a separate `if TYPE_CHECKING:` block.
+### Core Design Patterns & Principles
 
-6. **Write Clear Documentation**:
-    - Use NumPy docstring format, including sections like Summary, Parameters, Returns, Examples, Notes, Raises, and See Also.
-    - Always include a module-level docstring describing the purpose of the module and add examples and additional notes where necessary.
-    - Document type aliases, constants, and variables with clear, concise descriptions.
-    - Add docstrings for each function, method, or class attribute to explain its purpose and usage, including examples where relevant.
-    - Class docstrings should describe the purpose of the class and its attributes.
-    - Local helper functions or methods should have only a one-line summary and a brief description if necessary.
-    - Remember that good documentation should:
-      - Be clear and concise
-      - Include all necessary information
-      - Be kept up-to-date with code changes
-      - Include examples for non-obvious usage
-      - Document exceptions and edge cases
-      - Maintain consistency across the project
+- **DRY (Don't Repeat Yourself):** Avoid duplication—centralize logic to reduce maintenance and ensure consistency.
+- **KISS (Keep It Simple, Stupid):** Prefer simple, clear solutions over complex or clever constructs.
+- **YAGNI (You Ain't Gonna Need It):** Build only what is required now; avoid speculative features.
+- **SoC (Separation of Concerns):** Isolate unrelated responsibilities into distinct modules/functions.
+- **SRP (Single Responsibility Principle):** Functions/classes should do one thing well and have a single reason to change.
+- **Open/Closed Principle:** Code should be open for extension but closed for modification. Prefer extensible designs.
+- **Composition over Inheritance:** Use composition, protocols (`typing.Protocol`), and duck typing for code reuse and flexibility rather than deep inheritance hierarchies.
 
-## Docstring Guidelines by Scope
+---
 
-### Module Docstrings
+## Core Principles
 
-**Requirements:**
-- Comprehensive overview of module purpose and scope
-- Architecture explanation for complex modules
-- Usage examples showing common patterns
-- Cross-references to related modules
-- Installation/dependency information if relevant
+- Assume Python 3.11+ unless specified otherwise.
+- Follow the Zen of Python (PEP 20) and PEP 8 style, unless overridden by project-specific guidelines.
+- Write clear, maintainable, and well-documented code.
+- Prefer solutions that are simple, readable, and maintainable.
+- Use modern Python features only when they genuinely improve clarity or structure.
 
-**Length Guidelines:**
-- **Core modules**: Comprehensive (200-400 words typical)
-- **Utility modules**: Detailed (100-250 words typical)
-- **Simple modules**: Moderate (50-150 words typical)
+---
 
-**Content Structure:**
-- One-line summary
-- Extended description of purpose and functionality
-- Key features and capabilities
-- Usage examples
-- Architecture/flow diagrams if complex
-- Dependencies and requirements
-- Related modules and functions
-- Important notes and caveats
+## Type Annotations
 
-### Function Docstring Rules
+- Use modern type syntax: `X | None`, `list[T]`, `dict[str, T]`, etc.
+- Annotate all public functions, methods, and class attributes.
+- Use `-> None` for functions that do not return a value.
+- Use abstract base classes (`Sequence`, `Mapping`, `Iterable`) for generic/read-only access.
+- Use concrete types (`list[T]`, `set[T]`, `dict[K, V]`) for mutable collections.
+- Avoid quoted type annotations; enable postponed evaluation with `from __future__ import annotations`.
 
-**Public API Functions (used by external users):**
-- Rich, comprehensive docstrings focused on usage
-- Clear examples showing common use cases
-- Parameters and returns clearly documented
-- Usage-focused rather than implementation-focused
-- Easy to understand for end users
+---
 
-**Internal Functions (used across modules):**
-- Detailed context and explanations for maintainers
-- Implementation notes and caveats
-- Cross-references to related functions
-- Focus on developer understanding
-- More technical detail than public APIs
+## Imports & Path Handling
 
-**Important Helper Functions (frequently used, critical functionality):**
-- Details proportional to complexity and importance
-- Clear explanation of functionality
-- Usage context and dependencies
-- Error handling and edge cases
+- Group imports in this order, separated by blank lines:
+  1. Future imports
+  2. Standard library imports
+  3. Third-party and local/project imports
+- Always include a module-level docstring at the top of each file.
+- Place `from __future__ import annotations` immediately after the module docstring.
+- Prefer `pathlib` over `os.path` for filesystem paths; use `import pathlib` rather than `from pathlib import Path`.
+- Import collection types (`Iterable`, `Mapping`, `Sequence`) from `collections.abc`.
+- Move imports used only for typing into an `if TYPE_CHECKING:` block.
 
-**Simple Helper Functions (private, single-purpose):**
-- One-line summary is often sufficient
-- Include Parameters and Returns sections for all functions used within the same module, even if private. Only skip these sections for truly internal or nested functions that are not exported and used exclusively within their immediate scope.
-- Only add detail if function is complex or has important behavior
-- Avoid over-documentation for trivial functions
+---
 
-### Docstring Length Guidelines
+## Documentation
 
-**Module Docstrings:**
-- **Core modules**: Comprehensive (200-400 words typical)
-- **Utility modules**: Detailed (100-250 words typical)
-- **Simple modules**: Moderate (50-150 words typical)
+- Use NumPy-style docstrings for all modules, classes, and functions.
+- Always provide a module-level docstring describing the file's purpose, context, and conventions.
+- Public API modules must include:
+  - Clear summary of purpose and behavior
+  - Reproducible examples (with imports)
+  - Notes on usage or edge cases
+- Public API classes/functions/methods must include:
+  - User-focused docstrings explaining usage and only necessary implementation details
+  - Purpose and behavior summary
+  - Complete Parameters section (if arguments are non-trivial)
+  - Returns section (only if returning a value)
+  - Raises section (only if exceptions are documented)
+  - At least one reproducible example in an Examples section
+  - Notes for additional context
+- Internal/helper functions:
+  - Maintainers-focused docstrings explaining implementation details
+  - Purpose and behavior summary
+  - Provide concise docstrings focused on implementation details
+  - Include Parameters and Returns sections as appropriate
+  - Omit extensive examples unless function is complex
+  - Use Notes for clarifications or caveats
+  - Small internal helpers (<5 lines) may use single-line docstrings
+- Use cross-references (`See Also`) to link related functions/classes.
+- Keep documentation accurate and updated with code changes.
+- Over-documentation, that is, excessive or does not add value, should be avoided.
 
-**Function Docstrings:**
-- **Public APIs**: Comprehensive (100-300 words typical)
-- **Internal APIs**: Detailed (50-150 words typical)
-- **Important helpers**: Moderate (25-100 words typical)
-- **Simple helpers**: Concise (5-25 words typical)
+---
 
-### Content Requirements by Scope
+## Modern Python Features
 
-**Module Docstrings Must Include:**
-- Summary, Extended Description, Examples, Notes, See Also
-- Architecture overview for complex modules
-- Usage patterns and common workflows
+Use modern features judiciously:
 
-**Function Docstrings Must Include:**
-- Public APIs: Summary, Parameters, Returns, Examples, Notes
-- Internal APIs: Summary, Parameters, Returns, Notes, See Also
-- Important helpers: Summary, Parameters, Returns, Notes
-- Simple helpers: Summary, Parameters, Returns (only truly internal/nested functions can skip Parameters/Returns)
+- List/dict comprehensions for building collections.
+- Generator expressions for streaming or large data sets.
+- F-strings for string formatting.
+- Walrus operator (`:=`) for readable control flow—avoid complex use.
+- Structural pattern matching (`match`/`case`) for complex branching.
+- Context managers (`with`) for resource management.
+- Decorators for cross-cutting concerns (e.g., caching, validation).
+- `dataclasses`, `NamedTuple`, and `TypedDict` for typed containers.
+- Prefer typed containers and protocols over untyped dicts/tuples.
+**Do not use modern features just for novelty. Clarity and maintainability always take priority over using the latest features. Avoid overengineering or unnecessary complexity.**
 
-**Note**: Parameters and Returns sections should only be skipped by very simple functions that are used exclusively within a single module or are nested functions. All other functions must include these sections.
+---
 
-**Should Include:**
-- Error conditions and exceptions
-- Usage examples for non-obvious functions
-- Cross-references to related functions
-- Implementation caveats and limitations
+## Tooling
 
-**Avoid:**
-- Over-documentation of simple helper functions
-- Implementation details in public API docs
-- Redundant information already in type hints
-- Examples that don't add value
+- Format code with `ruff format`. Max line length: 100 characters (or project-specific).
+- Use `ruff` for linting and fix issues.
+- Follow all project-specific configuration for tools (e.g., `ruff`, `mypy`).
 
-7. **Utilize Tooling**:
-    - Format code with `ruff format`, apply a 100-character line length limit, and use `ruff` for linting.
+---
 
-## Examples
+## Example
 
-**Example Input (Code to Refactor):**
+**Original code**
 
 ```python
 def get_squares_with_filter(numbers):
@@ -168,13 +136,29 @@ def get_squares_with_filter(numbers):
     return result
 ```
 
-**Example Output (Refactored Code):**
+**Refactored code**
 
 ```python
-from typing import Sequence
+"""Module for numerical transformations and filtering.
+
+Provides functions for transforming sequences of numbers,
+including filtering and mapping operations.
+
+Examples
+--------
+>>> get_squares_with_filter([-1, 2, 3, -4])
+[4, 9]
+
+Notes
+-----
+Zero values are ignored because they are not strictly positive.
+"""
+
+from __future__ import annotations
+from collections.abc import Sequence
 
 def get_squares_with_filter(numbers: Sequence[int]) -> list[int]:
-    """Filter positive numbers and compute their squares.
+    """Compute squares of positive integers.
 
     Parameters
     ----------
@@ -184,25 +168,24 @@ def get_squares_with_filter(numbers: Sequence[int]) -> list[int]:
     Returns
     -------
     list[int]
-        A list containing the squares of positive integers from the input sequence.
+        The squares of positive integers from the input sequence.
 
-    Example
-    -------
+    Examples
+    --------
     >>> get_squares_with_filter([-1, 2, 3, -4])
     [4, 9]
     """
-    return [n ** 2 for n in numbers if n > 0]
+    return [n**2 for n in numbers if n > 0]
 ```
 
-**Compliance Checklist**:
+---
 
-- **Modern Features**: ✅ Used comprehensions, f-strings, pattern matching, and dataclasses.
-- **Type Hints**: ✅ Explicit type hints for functions and return types.
-- **Code Organization**: ✅ Imports grouped and code formatted consistently.
-- **Documentation**: ✅ Clear, reusable NumPy docstrings. Included examples.
+## Compliance Checklist
 
-## Notes
-
-- Encourage concise and expressive use of decorators, dataclasses, and generator expressions to simplify logic.
-- Ensure edge cases are documented and handled appropriately.
-- Refactor examples demonstrate modern Python idioms with clear, reusable code.
+- Modern features are used only where they improve clarity and structure.
+- Explicit, modern, and unquoted type annotations throughout.
+- Imports are grouped and ordered properly; paths use `pathlib`.
+- Public APIs have NumPy-style docstrings with examples and notes.
+- Internal helpers use concise documentation.
+- Code is formatted and linted with configured tooling.
+- Code structure, style, and design patterns align with DRY, KISS, YAGNI, SoC, SRP, open/closed, and composition principles.
