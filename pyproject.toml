@@ -109,6 +109,10 @@ pre-commit = { features = ["pre-commit"], solve-group = "pre-commit" }
 docs = { features = ["docs"], solve-group = "docs" }
 build = { features = ["build"], solve-group = "build" }
 
+[tool.pytest.ini_options]
+testpaths = ["tests/unit", "tests/integration"]
+asyncio_mode = "auto"
+
 # ==================== PIXI TASKS ======================
 [tool.pixi.tasks]
 update-pixi = { cmd = "pixi self-update" }
@@ -252,4 +256,4 @@ ignore = [
 ]
 [tool.ruff.lint.per-file-ignores]
 "*.ipynb" = ["D", "E402"]
-"tests/*" = []
+"tests/*" = ["D205", "D400", "D401", "D415", "E402", "PLR2004"]

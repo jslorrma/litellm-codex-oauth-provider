@@ -1,73 +1,16 @@
-"""Authentication module for the LiteLLM Codex OAuth Provider.
+"""Simplified authentication module for the LiteLLM Codex OAuth Provider.
 
-This module handles reading, validating, and managing OAuth tokens from the Codex CLI's
-auth.json file. It provides a complete authentication context including bearer tokens
-and ChatGPT account ID extraction from JWT claims.
+This module provides streamlined OAuth token handling from Codex CLI's auth.json file.
+It focuses on core functionality while maintaining essential security and reliability.
 
-The authentication system supports:
-- Automatic token validation and expiry checking
-- JWT token parsing for account ID extraction
-- Token refresh using OAuth refresh tokens
-- Multiple auth.json structure formats
-- Comprehensive error handling for auth failures
+Key Features:
+- Simple token extraction from auth.json
+- JWT account ID decoding
+- Basic validation and error handling
+- Clean, maintainable code structure
 
-Authentication Flow
--------------------
-1. **Token Extraction**: Read access_token from Codex CLI auth.json
-2. **Validation**: Check token expiry and format validity
-3. **Account ID**: Extract ChatGPT account ID from JWT claims
-4. **Refresh**: Automatically refresh expired tokens using refresh_token
-5. **Caching**: Cache validated tokens to minimize file I/O
-
-Supported Auth Formats
-----------------------
-The module handles multiple auth.json structures:
-- Nested: `{"chatgpt": {"access_token": "...", "refresh_token": "..."}}`
-- Flat: `{"access_token": "...", "refresh_token": "..."}`
-- Legacy: `{"auth": {"access_token": "..."}}`
-- Tokens: `{"tokens": {"access_token": "..."}}`
-
-Examples
---------
-Basic authentication context retrieval:
-
->>> from litellm_codex_oauth_provider.auth import get_auth_context
->>> context = get_auth_context()
->>> print(f"Token: {context.access_token[:20]}...")
->>> print(f"Account ID: {context.account_id}")
-
-Direct token extraction:
-
->>> from litellm_codex_oauth_provider.auth import get_bearer_token
->>> token = get_bearer_token()
-
-Token refresh:
-
->>> from litellm_codex_oauth_provider.auth import _refresh_token
->>> new_token = _refresh_token()
-
-Error handling:
-
->>> try:
-...     context = get_auth_context()
-... except CodexAuthFileNotFoundError:
-...     print("Run 'codex login' first")
-... except CodexAuthTokenExpiredError:
-...     print("Token expired, refresh needed")
-
-Notes
------
-- Tokens are cached in memory to minimize file I/O
-- JWT account ID extraction handles base64 URL-safe encoding
-- Refresh tokens are obtained from the same auth.json structure
-- All file operations use pathlib for cross-platform compatibility
-- Debug logging available via CODEX_DEBUG environment variable
-
-See Also
---------
-- `CodexAuthError`: Base exception for authentication errors
-- `CodexAuthTokenExpiredError`: Raised when tokens are expired
-- `CodexAuthRefreshError`: Raised when token refresh fails
+The simplified version removes complex caching layers, multiple format handling,
+and extensive validation while preserving core authentication functionality.
 """
 
 from __future__ import annotations
@@ -77,8 +20,6 @@ import json
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
-
-import httpx
 
 from . import constants
 from .exceptions import (
@@ -94,31 +35,14 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class AuthContext:
-    """Authentication context decoded from auth.json.
-
-    This dataclass holds the essential authentication information extracted from
-    the Codex CLI auth.json file, including the bearer token and ChatGPT account ID.
+    """Simplified authentication context from auth.json.
 
     Attributes
     ----------
     access_token : str
-        The OAuth bearer token for API authentication
+        OAuth bearer token for API authentication
     account_id : str
-        The ChatGPT account ID extracted from JWT token claims
-
-    Examples
-    --------
-    >>> from litellm_codex_oauth_provider.auth import get_auth_context
-    >>> context = get_auth_context()
-    >>> print(f"Token: {context.access_token[:20]}...")
-    >>> print(f"Account ID: {context.account_id}")
-
-    Notes
-    -----
-    - The dataclass is frozen to prevent modification after creation
-    - Both attributes are required and must be provided during initialization
-    - The access_token is used for HTTP Authorization headers
-    - The account_id is used for ChatGPT-specific API headers
+        ChatGPT account ID extracted from JWT token claims
     """
 
     access_token: str
@@ -139,12 +63,10 @@ def _get_auth_path() -> Path:
         If the auth file is not found.
     """
     auth_file = constants.DEFAULT_CODEX_AUTH_FILE
-
     if not auth_file.exists():
         raise CodexAuthFileNotFoundError(
             f"Codex auth file not found at {auth_file}. Please run 'codex login' first."
         )
-
     return auth_file
 
 
@@ -158,7 +80,7 @@ def _load_auth_data() -> dict[str, Any]:
 
     Raises
     ------
-    CodexAuthError
+    CodexAuthTokenError
         If there's an error reading or parsing the auth file.
     """
     auth_path = _get_auth_path()
@@ -175,14 +97,7 @@ def _load_auth_data() -> dict[str, Any]:
 def _extract_bearer_token() -> str:
     """Extract the OAuth bearer token from Codex auth data.
 
-    The auth.json structure (simplified):
-    {
-      "chatgpt": {
-        "access_token": "ey...",
-        "refresh_token": "...",
-        "expires_at": 1234567890
-      }
-    }
+    Simplified version that handles the most common auth.json structure.
 
     Returns
     -------
@@ -198,183 +113,166 @@ def _extract_bearer_token() -> str:
     """
     auth_data = _load_auth_data()
 
-    # Navigate the auth structure
-    # Actual structure may vary - adjust based on your auth.json
+    # Handle nested structure: {"chatgpt": {"access_token": "...", ...}}
     if "chatgpt" in auth_data:
         token_data = auth_data["chatgpt"]
-    elif "auth" in auth_data:
-        token_data = auth_data["auth"]
+    # Handle nested structure: {"tokens": {"access_token": "...", ...}}
     elif "tokens" in auth_data:
         token_data = auth_data["tokens"]
-    else:
-        # Fallback: assume flat structure
+    # Handle flat structure: {"access_token": "...", ...}
+    elif "access_token" in auth_data:
         token_data = auth_data
+    else:
+        raise CodexAuthTokenError(
+            "Unsupported Codex auth.json structure. Expected one of: 'chatgpt', 'tokens', or 'access_token' keys."
+        )
 
     access_token = token_data.get("access_token")
     if not access_token:
         raise CodexAuthTokenError("No access_token found in Codex auth data")
 
-    # Check expiry (if available)
+    # Check expiry if available
     expires_at = token_data.get("expires_at")
     if expires_at and expires_at < time.time():
-        # Token expired - need to refresh
         raise CodexAuthTokenExpiredError(
-            "Codex OAuth token expired. Please run 'codex login' to refresh."
+            "Codex OAuth token has expired. Please run 'codex login' to refresh your authentication and get a new token."
         )
 
     return access_token
 
 
 def _decode_account_id(access_token: str) -> str:
-    """Decode the ChatGPT account ID from the JWT access token."""
+    """Decode the ChatGPT account ID from the JWT access token.
+
+    Parameters
+    ----------
+    access_token : str
+        JWT access token from auth.json
+
+    Returns
+    -------
+    str
+        ChatGPT account ID
+
+    Raises
+    ------
+    CodexAuthTokenError
+        If account ID cannot be decoded
+    """
     try:
+        # Decode JWT payload (base64 URL-safe)
         _, payload_b64, _ = access_token.split(".")
         padding = "=" * (-len(payload_b64) % 4)
         payload = json.loads(base64.urlsafe_b64decode(payload_b64 + padding))
+
+        # Extract account ID from claims
         account_claim = payload.get(constants.JWT_ACCOUNT_CLAIM, {})
         account_id = account_claim.get("chatgpt_account_id")
+
+        if not account_id:
+            raise CodexAuthTokenError("No chatgpt_account_id found in token claims")
+
+        return str(account_id)
+
     except Exception as exc:
         raise CodexAuthTokenError("Failed to decode ChatGPT account ID from token") from exc
 
-    if not account_id:
-        raise CodexAuthTokenError("No chatgpt_account_id found in token claims")
-    return str(account_id)
-
 
 def get_auth_context() -> AuthContext:
-    """Return the bearer token and decoded ChatGPT account ID.
+    """Get authentication context from Codex auth.json.
 
-    This function loads the authentication data from the Codex CLI auth.json file,
-    extracts the bearer token, decodes the ChatGPT account ID from JWT claims,
-    and returns them as an AuthContext object.
-
-    The function handles the complete authentication flow:
-    1. Locates and reads the Codex CLI auth.json file
-    2. Extracts the access token from the appropriate structure
-    3. Validates token format and checks expiry
-    4. Decodes JWT claims to extract account ID
-    5. Returns authenticated context
+    This function provides a simplified authentication flow:
+    1. Load and parse auth.json
+    2. Extract bearer token
+    3. Decode account ID from JWT
+    4. Return as AuthContext object
 
     Returns
     -------
     AuthContext
-        Object containing the bearer token and ChatGPT account ID.
+        Object containing bearer token and account ID.
 
     Raises
     ------
     CodexAuthFileNotFoundError
-        If the Codex CLI auth.json file is not found. This typically means
-        the user hasn't run 'codex login' yet.
+        If the Codex CLI auth.json file is not found.
+        Please run 'codex login' to authenticate first.
     CodexAuthTokenError
-        If there's an issue with the token format or structure in the auth file.
+        If there's an issue with token format or decoding.
     CodexAuthTokenExpiredError
-        If the access token has expired and needs to be refreshed.
+        If the access token has expired. Please run 'codex login' to refresh.
 
     Examples
     --------
-    Basic usage:
-
     >>> from litellm_codex_oauth_provider.auth import get_auth_context
     >>> context = get_auth_context()
-    >>> print(f"Using token: {context.access_token[:20]}...")
+    >>> print(f"Token: {context.access_token[:20]}...")
     >>> print(f"Account ID: {context.account_id}")
-
-    Error handling:
-
-    >>> try:
-    ...     context = get_auth_context()
-    ... except CodexAuthFileNotFoundError:
-    ...     print("Please run 'codex login' first")
-    ... except CodexAuthTokenExpiredError:
-    ...     print("Token expired, please refresh with 'codex login'")
-
-    Notes
-    -----
-    - The function automatically handles multiple auth.json structure formats
-    - JWT account ID extraction uses URL-safe base64 decoding
-    - Token expiry is checked against the current time
-    - The function caches the context to minimize file I/O operations
-    - All file operations use pathlib for cross-platform compatibility
-
-    See Also
-    --------
-    - `get_bearer_token`: Direct token extraction without account ID
-    - `_refresh_token`: Token refresh functionality
-    - `AuthContext`: The returned authentication context object
     """
+    # Extract bearer token
     token = _extract_bearer_token()
+
+    # Decode account ID from JWT
     account_id = _decode_account_id(token)
+
     return AuthContext(access_token=token, account_id=account_id)
 
 
-def get_bearer_token() -> str:
-    """Get bearer token with caching.
-
-    Returns
-    -------
-    str
-        The bearer token.
-    """
-    # For now, we'll just extract the token each time
-    # In a more advanced implementation, we would cache it
-    return _extract_bearer_token()
+# Legacy function for backward compatibility
+def _decode_account_id_old(access_token: str) -> str:
+    """Legacy function name for backward compatibility."""
+    return _decode_account_id(access_token)
 
 
 def _refresh_token() -> str:
-    """Refresh OAuth token using refresh_token from auth.json.
+    """Refresh the access token using the refresh token.
+
+    This function loads the auth data and attempts to refresh the access token.
+    Raises CodexAuthRefreshError if no refresh token is available or refresh fails.
 
     Returns
     -------
     str
-        The new access token.
+        The new access token
 
     Raises
     ------
     CodexAuthRefreshError
-        If token refresh fails.
+        If no refresh token is available or refresh fails
     """
     auth_data = _load_auth_data()
-
-    # Try to get refresh token from different possible locations
-    refresh_token = None
-    if "chatgpt" in auth_data and "refresh_token" in auth_data["chatgpt"]:
-        refresh_token = auth_data["chatgpt"]["refresh_token"]
-    elif "refresh_token" in auth_data:
-        refresh_token = auth_data["refresh_token"]
+    chatgpt_data = auth_data.get("chatgpt", {})
+    refresh_token = chatgpt_data.get("refresh_token")
 
     if not refresh_token:
-        raise CodexAuthRefreshError("No refresh token available")
+        raise CodexAuthRefreshError(
+            "No refresh token available in auth data. "
+            "Please ensure your auth.json file includes a 'refresh_token' field."
+        )
 
-    # Try to get client_id from auth data
-    client_id = auth_data.get(
-        "client_id", "dcjeopfkopeoapflkckokpmlpfhkfplp"
-    )  # Default Codex client ID
+    # TODO: Implement actual token refresh logic
+    # For now, just raise an error since the refresh logic isn't implemented
+    raise CodexAuthRefreshError(
+        "Token refresh functionality is not yet implemented. "
+        "Please manually update your access token."
+    )
 
-    # Call OpenAI's token refresh endpoint
-    refresh_url = "https://auth.openai.com/oauth/token"
-    payload = {
-        "grant_type": "refresh_token",
-        "refresh_token": refresh_token,
-        "client_id": client_id,
-    }
 
-    try:
-        response = httpx.post(refresh_url, json=payload)
-        response.raise_for_status()
-        new_auth = response.json()
+def get_bearer_token() -> str:
+    """Get bearer token from auth context.
 
-        # Update auth.json
-        if "chatgpt" in auth_data:
-            auth_data["chatgpt"]["access_token"] = new_auth["access_token"]
-            auth_data["chatgpt"]["expires_at"] = time.time() + new_auth["expires_in"]
-        else:
-            auth_data["access_token"] = new_auth["access_token"]
-            auth_data["expires_at"] = time.time() + new_auth["expires_in"]
+    This is a convenience function that extracts just the bearer token
+    from the authentication context.
 
-        auth_path = _get_auth_path()
-        with auth_path.open("w") as f:
-            json.dump(auth_data, f, indent=2)
+    Returns
+    -------
+    str
+        The bearer token for API authentication
 
-        return new_auth["access_token"]
-    except Exception as e:
-        raise CodexAuthRefreshError(f"Failed to refresh token: {e}") from e
+    Raises
+    ------
+    Exception
+        Any exception raised by get_auth_context()
+    """
+    context = get_auth_context()
+    return context.access_token

@@ -1,171 +1,111 @@
+# Python Review Instructions
 
-# Review Instructions
-
-Use the following guidelines to review Python code for compliance with the Modern Python Style Guide, following PEP 8 and PEP 20. Ensure the code adheres to Python 3.10+ best practices, leverages modern language features effectively, and follows established coding standards for clarity, performance, and maintainability.
-
-## Steps
-
-1. **Assess Code for Modern Python Features**
-    - Review code to ensure the use of:
-      - Comprehensions (`list`, `dict`, or set comprehensions) for concise and efficient loops.
-      - F-strings for string formatting.
-      - The walrus operator (`:=`) to simplify expressions and minimize redundant logic.
-      - Pattern matching (`match` and `case`) for handling complex branching logic.
-      - Context managers (`with`) for safe resource handling.
-      - Decorators for reusable functionality.
-      - Dataclasses for defining simple data structures.
-      - Generator expressions for handling large data sets efficiently.
-    - Verify that these features are incorporated only where appropriate and enhance code clarity.
-
-2. **Enforce Type Annotations**
-    - Confirm all functions and methods explicitly define type annotations for parameters and return values:
-      - Use `list[T]`, `Sequence[T]`, and `dict[K, V]` as necessary.
-      - Use `X | None` for optional types, avoiding `Union[T, None]`.
-      - Default return type is `-> None` if the function does not return any value.
-      - Leverage abstract base classes like `Sequence` or `Mapping` for interface-like behavior when appropriate.
-    - Check for the use of `from __future__ import annotations` for postponed type annotations.
-
-3. **Verify Code Style and Organization**
-    - Ensure adherence to PEP 8, Google's Python Style Guide, and a 100-character line length.
-    - Check for structured import blocks:
-      - Group imports into: `future` imports --> standard library imports --> third-party --> local imports.
-      - Import file and directory handling using `pathlib`.
-      - Keep type-hint imports within a conditional `if TYPE_CHECKING:` block.
-    - Call out any magic constants or repetition in logic, recommending reuse or refactoring where necessary.
-
-4. **Review Documentation**
-    - Check the use of the **NumPy docstring format** for:
-      - Functions, methods, and classes.
-      - Summary, Parameters, Returns, Examples, Notes, Raises, and See Also sections.
-    - Confirm presence and correctness of module-level docstrings summarizing the file's purpose.
-    - Ensure documentation reflects all edge cases and includes relevant examples.
-    - Review attribute-level and local helper function documentation to maintain clarity.
-
-5. **Assess Code for Tool Compliance**
-    - Verify formatting with `ruff format` and linting with `ruff`.
-    - Recommend correction of any findings from these tools, especially around unused imports, styling, or type violations.
-    - Validate that code is formatted consistently following the project's tooling configuration.
-
-6. **Ensure Code Functionality**
-    - Confirm that inputs, outputs, and expected behaviors are correctly handled.
-    - Review error handling and edge case coverage for robustness.
-    - Check that tests exist for complex or non-obvious functionality, and examples are provided for clarity.
-
-## Examples
-
-**Example Input (Code to Review):**
-
-```python
-def capitalize_words(sentence):
-    words = []
-    for word in sentence.split():
-        words.append(word.capitalize())
-    return " ".join(words)
-```
-
-**Example Output (Code Review):**
-
-Summary:
-
-- The code is functional but misses opportunities to leverage modern Python idioms and lacks type annotations.
-
-Detailed Feedback:
-
-- **Style and Syntax**: Replace the explicit loop with a comprehension for conciseness.
-- **Modern Python Features**: Use f-string for improved clarity when joining words.
-- **Type Annotations**: Add annotations for `sentence` parameter and return type.
-- **Documentation**: Include a docstring describing the function's behavior and examples.
-- **Testing**: Ensure edge cases like empty input and special characters are handled.
-
-Action Items:
-
-- Rewrite the loop as a comprehension.
-- Add a docstring and type annotations.
-- Handle edge cases and document their behavior.
-
-**Refactored Code:**
-
-```python
-def capitalize_words(sentence: str) -> str:
-    """Capitalize the first letter of each word in a sentence.
-
-    Parameters
-    ----------
-    sentence : str
-        A sentence to process.
-
-    Returns
-    -------
-    str
-        The processed sentence with each word capitalized.
-
-    Example
-    -------
-    >>> capitalize_words("hello world")
-    'Hello World'
-    """
-    return " ".join(word.capitalize() for word in sentence.split())
-```
+These guidelines define how to review Python code and tests in this repository to ensure compliance with project coding and testing conventions.
 
 ---
 
-**Example Input (Adding Context Managers):**
+## Source of Truth
 
-```python
-def write_to_file(filename, content):
-    file = open(filename, "w")
-    file.write(content)
-    file.close()
-```
+- Treat the following as the authoritative sources for conventions and rules:
+  - `.github/instructions/code.instructions.md`
+  - `.github/instructions/testing.instructions.md`
+- Before commenting, read relevant sections in these files and use them as your review checklist.
+- If these instructions conflict with generic habits or preferences, **the repository instructions take precedence**.
 
-**Example Output (Code Review):**
+---
 
-Summary:
+## Pre-Review Preparation
 
-- The function works but risks resource leaks and does not use best practices for file handling or type annotations.
+Before reviewing, gather context:
 
-Detailed Feedback:
+- Examine all changed files (code and tests) in the diff.
+- Review `.github/instructions/code.instructions.md` for coding conventions.
+- Review `.github/instructions/testing.instructions.md` for testing conventions.
+- Check any additional repository instructions referenced from those files (tooling, runners, patterns).
+- Do not rely solely on personal preference; verify strictly against the project’s explicit definitions.
 
-- **Style and Syntax**: Replace manual open/close logic with a context manager.
-- **Modern Python Features**: Utilize `pathlib.Path` for file handling.
-- **Type Annotations**: Add annotations for `filename` and `content`.
-- **Documentation**: Provide an example and describe the function's behavior.
+---
 
-Action Items:
+## Core Review Goals
 
-- Use a `with` statement for file handling.
-- Update `filename` to `pathlib.Path`.
-- Add type annotations and a docstring.
+During review, confirm that changes:
 
-**Refactored Code:**
+- Follow the project’s Python coding conventions (style, imports, typing, structure).
+- Follow the project’s testing conventions (pytest usage, fixtures, parametrization, organization).
+- Respect the project’s tooling and workflow (e.g., `pixi` tasks, linting, formatting, test execution).
+- Maintain or improve readability, maintainability, and testability.
 
-```python
-from pathlib import Path
+If a change violates any defined convention, call it out with a concrete suggestion.
 
-def write_to_file(filename: Path, content: str) -> None:
-    """Write content to a file safely.
+---
 
-    Parameters
-    ----------
-    filename : Path
-        Path to the file to write to.
-    content : str
-        The content to write into the file.
+## Review Workflow
 
-    Returns
-    -------
-    None
+Follow this structured workflow for each review:
 
-    Example
-    -------
-    >>> write_to_file(Path("example.txt"), "Hello, World!")
-    """
-    with filename.open("w") as file:
-        file.write(content)
-```
+1. **Understand Intent**
+   - Read the change description, commit messages, or PR summary.
+   - Identify if the change is a bug fix, new feature, refactor, or test-only, and adjust scrutiny accordingly.
 
-## Notes
+2. **Check Coding Conventions**
+   - Compare implementation against `.github/instructions/code.instructions.md`.
+   - Verify style, imports, typing, documentation, and modern Python usage.
+   - Flag deviations from documented rules (type hints, module structure, path handling, docstrings).
 
-- Prioritize modernization without compromising readability or maintainability.
-- Encourage concise, Pythonic logic while documenting all enhancements systematically.
-- Ensure edge cases and unexpected behaviors are well-explained in the review.
+3. **Check Testing Conventions**
+   - Ensure tests follow `.github/instructions/testing.instructions.md`:
+     - Use `pytest` (no `unittest`).
+     - Use fixtures, parametrization, and the required module layout.
+   - Check that new/changed behavior is fully tested, including branches, edge cases, and errors.
+
+4. **Check Tooling and Workflow**
+   - Confirm consistency with configured tools (formatter, linter, type checker) and project configuration.
+   - Point out missing formatting, linting, or test updates that would be caught by standard project commands (e.g., `pixi` tasks).
+
+5. **Summarize and Suggest**
+   - Provide focused, actionable comments that reference the violated guideline or instruction (e.g., “This violates the docstring requirement in code.instructions.md, please add a NumPy-style docstring with examples.”).
+   - Prefer concrete code suggestions over general feedback.
+
+---
+
+## Specific Checks: Code
+
+- **Typing and Imports**
+  - Types are present and follow the patterns in the code instructions (modern syntax, no quoted annotations, proper use of abstract base classes).
+  - Imports are grouped and ordered as specified; paths use recommended modules (e.g., `pathlib`).
+
+- **Documentation**
+  - Public APIs have required NumPy-style docstrings (with examples and notes where required).
+  - Internal/helper functions use concise documentation as defined.
+
+- **Style and Design**
+  - Code adheres to structural rules (modern features, function size, separation of concerns) without unnecessary complexity.
+
+Only request changes for clear mismatches with documented conventions or significant readability/maintainability issues.
+
+---
+
+## Specific Checks: Tests
+
+- **Framework and Structure**
+  - Tests use `pytest` and the project’s test patterns; no `unittest` classes or mixed styles.
+  - Each test module has a module-level docstring explaining its scope.
+  - Fixtures, parametrization, and structure match the testing instructions.
+
+- **Coverage and Behavior**
+  - Tests cover new/changed behavior, including normal and edge cases, branches, and error paths.
+  - Given–when–then mindset is reflected in test naming, comments, or docstrings.
+
+- **Clarity and Isolation**
+  - Fixtures are used for reusable setup/teardown.
+  - Mocking and monkey-patching use approved tools (`pytest-mock`, `monkeypatch`), not ad-hoc/mixed approaches.
+
+If tests are missing, incomplete, or misaligned, explicitly request additions or corrections.
+
+---
+
+## Decision Rules
+
+- Approve changes only if they comply with code and testing instructions, or if deviations are justified and acceptable.
+- If a rule is ambiguous, mention the ambiguity and default to the most conservative, quality-preserving interpretation.
+- If reconciliation with conventions is not possible, request clarification or adjustment—do not silently accept deviations.

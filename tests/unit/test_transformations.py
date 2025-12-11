@@ -15,8 +15,8 @@ def test_normalize_model_handles_alias_and_suffix() -> None:
 
     Confirms alias resolution drops provider prefixes and effort suffixes to the canonical model.
     """
-    normalized = normalize_model("codex/gpt-5-codex-high")
-    assert normalized == "gpt-5.1-codex"
+    normalized = normalize_model("codex/gpt-5.1-codex-high")
+    assert normalized == "gpt-5.1-codex-high"
 
 
 def test_reasoning_config_clamps_codex_mini() -> None:

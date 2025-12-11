@@ -2,18 +2,17 @@
 
 Given a git diff, analyze the changes and generate an appropriate commit message in the specified format.
 
+---
+
 ## Conventional Commits Format
 
-```text
+```
 <type>[optional scope]: <description>
 [optional body]
 [optional footer(s)]
 ```
 
-### Notes
-
-- Ensure that all file names in the description are wrapped in backticks for clarity.
-- Focus on clarity and brevity in both the title and descriptions.
+---
 
 ### Core Types (Required)
 
@@ -32,12 +31,16 @@ Given a git diff, analyze the changes and generate an appropriate commit message
 - **chore**: Maintenance tasks, tooling changes
 - **revert**: Reverting previous commits
 
+---
+
 ### Scope Guidelines
 
 - Use parentheses: `feat(api):`, `fix(ui):`
 - Common scopes: `api`, `ui`, `auth`, `db`, `config`, `deps`, `docs`
 - For monorepos: package or module names
-- Keep scope concise and lowercase
+- Scope should be concise and lowercase
+
+---
 
 ### Description Rules
 
@@ -46,18 +49,26 @@ Given a git diff, analyze the changes and generate an appropriate commit message
 - No period at the end
 - Maximum 50 characters
 - Be concise but descriptive
+- Wrap all file names in backticks for clarity
+
+---
 
 ### Body Guidelines (Optional)
 
 - Start one blank line after description
-- Explain the "what" and "why", not the "how"
+- Explain "what" and "why", not "how"
 - Wrap at 72 characters per line
 - Use for complex changes requiring explanation
+
+---
 
 ### Footer Guidelines (Optional)
 
 - Start one blank line after body
 - **Breaking Changes**: `BREAKING CHANGE: description`
+- Issue references, e.g., `Closes #123`
+
+---
 
 ## Analysis Instructions
 
@@ -70,6 +81,6 @@ When analyzing staged changes:
 5. For complex changes, include a detailed body explaining what and why
 6. Add appropriate footers for issue references or breaking changes
 
-For significant changes, include a detailed body explaining the changes.
+---
 
-Return ONLY the commit message in the conventional format, nothing else.
+**Return ONLY the commit message in the conventional format.**
