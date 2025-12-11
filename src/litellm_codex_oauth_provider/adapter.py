@@ -3,13 +3,13 @@ r"""Codex response adapters for LiteLLM interoperability.
 This module converts Codex `/responses` payloads—whether delivered as Server-Sent Events
 (SSE) buffers or plain JSON bodies—into LiteLLM `ModelResponse` objects. Functions are
 intentionally side-effect free to keep sync and async call stacks simple and testable.
-Whenever possible, parsing relies on OpenAI's typed models for strict validation, while
-fallback paths preserve resilience against minor API drift or incomplete payloads.
+The implementation uses direct JSON parsing for maximum compatibility with Codex's
+response format while maintaining resilience against API variations.
 
 Key capabilities
 ----------------
 - Detect SSE buffers versus JSON responses and normalize them into a single payload
-- Validate payloads with OpenAI typed models and surface concise debug context on failure
+- Direct JSON parsing for both SSE and standard responses
 - Normalize tool calls from message-level or output-level formats
 - Build LiteLLM usage blocks from Codex token counters and inferred totals
 - Generate minimal streaming chunks to simulate streaming from completed responses
@@ -49,12 +49,12 @@ Notes
 - All helpers are deterministic and reusable across sync/async provider paths.
 - Tool-call handling supports both modern and legacy Codex formats.
 - Usage aggregation tolerates missing totals by deriving them from known fields.
+- Direct JSON parsing ensures maximum compatibility with Codex response formats.
 
 See Also
 --------
 - `litellm.types.utils.GenericStreamingChunk`: Streaming response chunk used by LiteLLM
 - `litellm.ModelResponse`: Normalized response structure expected by LiteLLM
-- `openai.types.responses.Response`: Typed model used for validation
 """
 
 from __future__ import annotations
@@ -67,7 +67,6 @@ from typing import TYPE_CHECKING, Any
 
 from litellm import Choices, Message, ModelResponse
 from litellm.types.utils import GenericStreamingChunk, Usage
-from openai.types.responses import Response, ResponseStreamEvent
 
 if TYPE_CHECKING:
     import httpx
@@ -84,10 +83,9 @@ def parse_response_body(response: httpx.Response) -> dict[str, Any]:
     the response type and applies the appropriate parsing strategy.
 
     The parsing process:
-    1. Checks Content-Type header for SSE detection
+    1. Checks Content-Type header and body text for SSE detection
     2. For SSE: Converts buffered text to final JSON payload
-    3. For JSON: Attempts typed model validation first, then raw JSON parsing
-    4. Provides fallback mechanisms for robustness
+    3. For JSON: Directly parses as JSON
 
     Parameters
     ----------
@@ -123,44 +121,33 @@ def parse_response_body(response: httpx.Response) -> dict[str, Any]:
 
     Notes
     -----
-    - SSE detection is based on Content-Type header and response text patterns
-    - OpenAI typed model validation provides strict schema checking
-    - Fallback to raw JSON parsing ensures robustness
+    - SSE detection is based on Content-Type header and "data:" prefix check
+    - Direct JSON parsing for non-SSE responses
     - SSE processing extracts the final response event from buffered text
-    - Detailed logging available for debugging parsing issues
 
     See Also
     --------
     - `convert_sse_to_json`: Convert SSE text to JSON
-    - `Response`: OpenAI typed response model
+    - `transform_response`: Transform response to LiteLLM format
     """
     content_type = (response.headers.get("content-type") or "").lower()
     body_text = response.text
-    if "text/event-stream" in content_type or body_text.lstrip().startswith("event:"):
+    # Check for SSE by content-type header or "data:" prefix (SSE format)
+    if "text/event-stream" in content_type or body_text.lstrip().startswith("data:"):
         parsed = convert_sse_to_json(body_text)
         if parsed:
             return parsed
         raise RuntimeError("Codex API returned stream without final response event")
+
+    # Parse as standard JSON response
     try:
-        # Use OpenAI's typed Response model for strict schema validation and parsing.
-        # If this fails (e.g., due to schema mismatch or unexpected fields), fall back to raw JSON parsing below.
-        return Response.model_validate_json(response.content).model_dump()
+        return response.json()
     except json.JSONDecodeError as exc:
-        raise RuntimeError("Codex API returned invalid JSON") from exc
-    except Exception as exc:
-        logger.debug(
-            "OpenAI typed response validation failed; falling back to raw JSON",
-            extra={
-                "status_code": response.status_code,
-                "headers": dict(response.headers),
-                "error": str(exc),
-            },
-        )
-        try:
-            # Fallback: parse raw JSON if typed model validation fails
-            return response.json()
-        except Exception as json_exc:
-            raise RuntimeError("Codex API response could not be parsed as JSON") from json_exc
+        # Provide helpful context for debugging JSON parse failures
+        body_preview = response.text[:200] if len(response.text) > 200 else response.text
+        raise RuntimeError(
+            f"Codex API returned invalid JSON (status {response.status_code}): {body_preview}..."
+        ) from exc
 
 
 def convert_sse_to_json(payload: str) -> dict[str, Any]:
@@ -202,15 +189,13 @@ def convert_sse_to_json(payload: str) -> dict[str, Any]:
     -----
     - SSE format: Each event starts with "data:" followed by JSON content
     - Completion marker: "[DONE]" indicates end of stream
-    - Typed validation: Uses OpenAI Response models when available
-    - Fallback extraction: Best-effort parsing when typed validation fails
+    - Direct extraction: Searches for response payloads in completion events
     - Error handling: Skips invalid JSON events and continues processing
-    - Event order: Processes events in order but extracts final response
+    - Event order: Processes events in reverse to find final response
 
     See Also
     --------
-    - `_extract_validated_response_from_events`: Typed model validation
-    - `_extract_response_from_events`: Best-effort extraction
+    - `_extract_response_from_events`: Response payload extraction
     - `parse_response_body`: Higher-level response parsing
     """
     events: list[dict[str, Any]] = []
@@ -226,10 +211,6 @@ def convert_sse_to_json(payload: str) -> dict[str, Any]:
             continue
         if isinstance(event, Mapping):
             events.append(event)
-
-    validated = _extract_validated_response_from_events(events)
-    if validated:
-        return validated
 
     return _extract_response_from_events(events)
 
@@ -387,55 +368,6 @@ def _extract_response_from_events(events: list[dict[str, Any]]) -> dict[str, Any
         if isinstance(last, Mapping):
             return dict(last)
     return {}
-
-
-def _extract_validated_response_from_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Validate SSE events using OpenAI typed models and return first successful response.
-
-    Attempts to validate events using ResponseStreamEvent and Response models.
-    Processes events in reverse order and returns first validated response.
-
-    Parameters
-    ----------
-    events : list[dict[str, Any]]
-        Parsed SSE events containing potential response payloads.
-
-    Returns
-    -------
-    dict[str, Any] | None
-        Validated response payload or ``None`` if validation fails.
-    """
-    validation_errors: list[str] = []
-    validated_response: dict[str, Any] | None = None
-    for event in reversed(events):
-        try:
-            typed_event = ResponseStreamEvent.model_validate(event)
-        except Exception as exc:
-            if logger.isEnabledFor(logging.DEBUG):
-                validation_errors.append(f"event-parse: {exc}")
-            continue
-        response_payload = getattr(typed_event, "response", None)
-        if response_payload is None:
-            continue
-        try:
-            validated_response = Response.model_validate(response_payload).model_dump()
-            break
-        except Exception as exc:
-            if logger.isEnabledFor(logging.DEBUG):
-                validation_errors.append(f"response-validate: {exc}")
-            continue
-
-    if validation_errors and logger.isEnabledFor(logging.DEBUG):
-        error_summary_limit = 5
-        # Log a single summary line to avoid per-event noise.
-        logger.debug(
-            "Failed to validate response stream events; falling back to raw extraction",
-            extra={
-                "errors": validation_errors[:error_summary_limit],
-                "errors_truncated": len(validation_errors) > error_summary_limit,
-            },
-        )
-    return validated_response
 
 
 def _build_usage(usage: Mapping[str, Any] | None) -> Usage:
